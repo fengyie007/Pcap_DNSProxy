@@ -1,6 +1,6 @@
 ﻿// This code is part of Pcap_DNSProxy
 // A local DNS server based on WinPcap and LibPcap
-// Copyright (C) 2012-2015 Chengr28
+// Copyright (C) 2012-2016 Chengr28
 // 
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -17,21 +17,27 @@
 // Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
+#ifndef PCAP_DNSPROXY_MAIN_H
+#define PCAP_DNSPROXY_MAIN_H
+
 #include "Base.h"
 
 //Global variables
-extern CONFIGURATION_TABLE Parameter;
-extern time_t StartTime;
-#if defined(ENABLE_LIBSODIUM)
-	extern DNSCURVE_CONFIGURATON_TABLE DNSCurveParameter;
-#endif
+extern GLOBAL_STATUS GlobalRunningStatus;
+extern std::mutex ScreenLock;
 
-//Functions
+//Functions in ReadCommand.cpp
 #if defined(PLATFORM_WIN)
-	bool __fastcall ReadCommand(int argc, wchar_t *argv[]);
-	bool __fastcall FileNameInit(const wchar_t *OriginalPath);
-	bool __fastcall FirewallTest(const uint16_t Protocol);
-#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-	bool ReadCommand(int argc, char *argv[]);
-	bool FileNameInit(const char *OriginalPath);
+bool ReadCommand(
+	int argc, 
+	wchar_t *argv[]);
+bool FileNameInit(
+	const wchar_t * const OriginalPath);
+#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+bool ReadCommand(
+	int argc, 
+	char *argv[]);
+bool FileNameInit(
+	const char * const OriginalPath);
+#endif
 #endif

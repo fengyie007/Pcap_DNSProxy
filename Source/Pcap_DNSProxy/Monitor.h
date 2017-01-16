@@ -1,6 +1,6 @@
 ﻿// This code is part of Pcap_DNSProxy
 // A local DNS server based on WinPcap and LibPcap
-// Copyright (C) 2012-2015 Chengr28
+// Copyright (C) 2012-2016 Chengr28
 // 
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -17,24 +17,37 @@
 // Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
+#ifndef PCAP_DNSPROXY_MONITOR_H
+#define PCAP_DNSPROXY_MONITOR_H
+
 #include "Base.h"
 
 //Global variables
-extern CONFIGURATION_TABLE Parameter;
+extern CONFIGURATION_TABLE Parameter, ParameterModificating;
+extern GLOBAL_STATUS GlobalRunningStatus;
 extern ALTERNATE_SWAP_TABLE AlternateSwapList;
 #if defined(ENABLE_LIBSODIUM)
-	extern DNSCURVE_CONFIGURATON_TABLE DNSCurveParameter;
+extern DNSCURVE_CONFIGURATION_TABLE DNSCurveParameter, DNSCurveParameterModificating;
 #endif
-extern std::mutex LocalAddressLock[NETWORK_LAYER_PARTNUM];
+extern std::deque<SOCKET_MARKING_DATA> SocketMarkingList;
+extern std::mutex LocalAddressLock[], SocketMarkingLock;
 
 //Functions
-bool __fastcall UDPMonitor(const SOCKET_DATA LocalSocketData);
-bool __fastcall TCPMonitor(const SOCKET_DATA LocalSocketData);
-bool __fastcall TCPReceiveProcess(const SOCKET_DATA LocalSocketData);
-void __fastcall AlternateServerMonitor(void);
+bool UDP_Monitor(
+	const SOCKET_DATA LocalSocketData, 
+	bool * const Result);
+bool TCP_Monitor(
+	const SOCKET_DATA LocalSocketData, 
+	bool * const Result);
 #if defined(PLATFORM_WIN)
-	PADDRINFOA __fastcall GetLocalAddressList(const uint16_t Protocol, PSTR HostName);
-#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-	bool GetBestInterfaceAddress(const uint16_t Protocol, const sockaddr_storage *OriginalSockAddr);
+addrinfo *GetLocalAddressList(
+	const uint16_t Protocol, 
+	uint8_t * const HostName);
+#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+bool GetBestInterfaceAddress(
+	const uint16_t Protocol, 
+	const sockaddr_storage * const OriginalSockAddr);
 #endif
-void __fastcall GetGatewayInformation(const uint16_t Protocol);
+void GetGatewayInformation(
+	const uint16_t Protocol);
+#endif

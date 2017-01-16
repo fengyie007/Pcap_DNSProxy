@@ -1,6 +1,6 @@
 ﻿// This code is part of Pcap_DNSProxy
 // A local DNS server based on WinPcap and LibPcap
-// Copyright (C) 2012-2015 Chengr28
+// Copyright (C) 2012-2016 Chengr28
 // 
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -19,44 +19,56 @@
 
 #include "Configuration.h"
 
+//Global variables
+size_t ParameterHopLimitIndex[]{0, 0};
+
 //Read texts
-bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t FileIndex)
+bool ReadText(
+	const FILE * const FileHandle, 
+	const READ_TEXT_TYPE InputType, 
+	const size_t FileIndex)
 {
+//Reset global variables.
+	if (InputType == READ_TEXT_TYPE::PARAMETER_NORMAL || InputType == READ_TEXT_TYPE::PARAMETER_MONITOR)
+	{
+		ParameterHopLimitIndex[NETWORK_LAYER_TYPE_IPV6] = 0;
+		ParameterHopLimitIndex[NETWORK_LAYER_TYPE_IPV4] = 0;
+	}
+
 //Initialization
-	std::shared_ptr<char> FileBuffer(new char[FILE_BUFFER_SIZE]()), TextBuffer(new char[FILE_BUFFER_SIZE]());
+	std::shared_ptr<uint8_t> FileBuffer(new uint8_t[FILE_BUFFER_SIZE]()), TextBuffer(new uint8_t[FILE_BUFFER_SIZE]());
 	memset(FileBuffer.get(), 0, FILE_BUFFER_SIZE);
 	memset(TextBuffer.get(), 0, FILE_BUFFER_SIZE);
 	std::string TextData;
-	size_t ReadLength = 0, Encoding = 0, Index = 0, Line = 0, LabelType = 0;
-	auto IsEraseBOM = true, NewLine_Point = false, IsLabelComments = false;
+	auto LabelType_IPFilter = LABEL_IPFILTER_TYPE::NONE;
+	auto LabelType_Hosts = LABEL_HOSTS_TYPE::NONE;
+	size_t Encoding = 0, Index = 0, Line = 0;
+	auto IsEraseBOM = true, NewLinePoint = false, IsStopLabel = false;
 
 //Read data.
-	while (!feof((FILE *)Input))
+	while (!feof((FILE *)FileHandle))
 	{
 	//Read file and Mark last read.
-		ReadLength = fread_s(FileBuffer.get(), FILE_BUFFER_SIZE, sizeof(char), FILE_BUFFER_SIZE, (FILE *)Input);
+		_set_errno(0);
+		auto ReadLength = fread_s(FileBuffer.get(), FILE_BUFFER_SIZE, sizeof(uint8_t), FILE_BUFFER_SIZE, (FILE *)FileHandle);
+		if (ReadLength == 0)
+		{
+			if (errno != 0)
+			{
+				ReadTextPrintLog(InputType, FileIndex, Line);
+				return false;
+			}
+			else {
+				continue;
+			}
+		}
 
 	//Erase BOM of Unicode Transformation Format/UTF at first.
 		if (IsEraseBOM)
 		{
 			if (ReadLength <= READ_DATA_MINSIZE)
 			{
-				switch (InputType)
-				{
-					case READ_TEXT_HOSTS: //ReadHosts
-					{
-						PrintError(LOG_ERROR_HOSTS, L"Data of a line is too short", 0, FileList_Hosts.at(FileIndex).FileName.c_str(), Line);
-					}break;
-					case READ_TEXT_IPFILTER: //ReadIPFilter
-					{
-						PrintError(LOG_ERROR_IPFILTER, L"Data of a line is too short", 0, FileList_IPFilter.at(FileIndex).FileName.c_str(), Line);
-					}break;
-					case READ_TEXT_PARAMETER: //ReadParameter
-					{
-						PrintError(LOG_ERROR_PARAMETER, L"Data of a line is too short", 0, ConfigFileList.at(FileIndex).c_str(), Line);
-					}break;
-				}
-
+				ReadTextPrintLog(InputType, FileIndex, Line);
 				return false;
 			}
 			else {
@@ -64,7 +76,7 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 			}
 
 		//8-bit Unicode Transformation Format/UTF-8 with BOM
-			if ((UCHAR)FileBuffer.get()[0] == 0xEF && (UCHAR)FileBuffer.get()[1U] == 0xBB && (UCHAR)FileBuffer.get()[2U] == 0xBF) //0xEF, 0xBB, 0xBF
+			if (FileBuffer.get()[0] == 0xEF && FileBuffer.get()[1U] == 0xBB && FileBuffer.get()[2U] == 0xBF) //0xEF, 0xBB, 0xBF
 			{
 				memmove_s(FileBuffer.get(), FILE_BUFFER_SIZE, FileBuffer.get() + BOM_UTF_8_LENGTH, FILE_BUFFER_SIZE - BOM_UTF_8_LENGTH);
 				memset(FileBuffer.get() + FILE_BUFFER_SIZE - BOM_UTF_8_LENGTH, 0, BOM_UTF_8_LENGTH);
@@ -72,7 +84,8 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 				Encoding = CODEPAGE_UTF_8;
 			}
 		//32-bit Unicode Transformation Format/UTF-32 Little Endian/LE
-			else if ((UCHAR)FileBuffer.get()[0] == 0xFF && (UCHAR)FileBuffer.get()[1U] == 0xFE && FileBuffer.get()[2U] == 0 && FileBuffer.get()[3U] == 0) //0xFF, 0xFE, 0x00, 0x00
+			else if (FileBuffer.get()[0] == 0xFF && FileBuffer.get()[1U] == 0xFE && 
+				FileBuffer.get()[2U] == 0 && FileBuffer.get()[3U] == 0) //0xFF, 0xFE, 0x00, 0x00
 			{
 				memmove_s(FileBuffer.get(), FILE_BUFFER_SIZE, FileBuffer.get() + BOM_UTF_32_LENGTH, FILE_BUFFER_SIZE - BOM_UTF_32_LENGTH);
 				memset(FileBuffer.get() + FILE_BUFFER_SIZE - BOM_UTF_32_LENGTH, 0, BOM_UTF_32_LENGTH);
@@ -80,7 +93,8 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 				Encoding = CODEPAGE_UTF_32_LE;
 			}
 		//32-bit Unicode Transformation Format/UTF-32 Big Endian/BE
-			else if (FileBuffer.get()[0] == 0 && FileBuffer.get()[1U] == 0 && (UCHAR)FileBuffer.get()[2U] == 0xFE && (UCHAR)FileBuffer.get()[3U] == 0xFF) //0x00, 0x00, 0xFE, 0xFF
+			else if (FileBuffer.get()[0] == 0 && FileBuffer.get()[1U] == 0 && 
+				FileBuffer.get()[2U] == 0xFE && FileBuffer.get()[3U] == 0xFF) //0x00, 0x00, 0xFE, 0xFF
 			{
 				memmove_s(FileBuffer.get(), FILE_BUFFER_SIZE, FileBuffer.get() + BOM_UTF_32_LENGTH, FILE_BUFFER_SIZE - BOM_UTF_32_LENGTH);
 				memset(FileBuffer.get() + FILE_BUFFER_SIZE - BOM_UTF_32_LENGTH, 0, BOM_UTF_32_LENGTH);
@@ -88,7 +102,7 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 				Encoding = CODEPAGE_UTF_32_BE;
 			}
 		//16-bit Unicode Transformation Format/UTF-16 Little Endian/LE
-			else if ((UCHAR)FileBuffer.get()[0] == 0xFF && (UCHAR)FileBuffer.get()[1U] == 0xFE) //0xFF, 0xFE
+			else if (FileBuffer.get()[0] == 0xFF && FileBuffer.get()[1U] == 0xFE) //0xFF, 0xFE
 			{
 				memmove_s(FileBuffer.get(), FILE_BUFFER_SIZE, FileBuffer.get() + BOM_UTF_16_LENGTH, FILE_BUFFER_SIZE - BOM_UTF_16_LENGTH);
 				memset(FileBuffer.get() + FILE_BUFFER_SIZE - BOM_UTF_16_LENGTH, 0, BOM_UTF_16_LENGTH);
@@ -96,7 +110,7 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 				Encoding = CODEPAGE_UTF_16_LE;
 			}
 		//16-bit Unicode Transformation Format/UTF-16 Big Endian/BE
-			else if ((UCHAR)FileBuffer.get()[0] == 0xFE && (UCHAR)FileBuffer.get()[1U] == 0xFF) //0xFE, 0xFF
+			else if (FileBuffer.get()[0] == 0xFE && FileBuffer.get()[1U] == 0xFF) //0xFE, 0xFF
 			{
 				memmove_s(FileBuffer.get(), FILE_BUFFER_SIZE, FileBuffer.get() + BOM_UTF_16_LENGTH, FILE_BUFFER_SIZE - BOM_UTF_16_LENGTH);
 				memset(FileBuffer.get() + FILE_BUFFER_SIZE - BOM_UTF_16_LENGTH, 0, BOM_UTF_16_LENGTH);
@@ -115,13 +129,13 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 			uint16_t SingleText = 0;
 			for (Index = 0;Index < ReadLength;)
 			{
-			//About this process, see https://en.wikipedia.org/wiki/UTF-8.
-				if ((UCHAR)FileBuffer.get()[Index] > 0xE0 && Index >= 3U)
+			//About this check process, visit https://en.wikipedia.org/wiki/UTF-8.
+				if (FileBuffer.get()[Index] > 0xE0 && Index >= 3U)
 				{
 					SingleText = (((uint16_t)(FileBuffer.get()[Index] & 0x0F)) << 12U) + (((uint16_t)(FileBuffer.get()[Index + 1U] & 0x3F)) << 6U) + (uint16_t)(FileBuffer.get()[Index + 2U] & 0x3F);
-				
+
 				//Next line format
-					if (SingleText == UNICODE_LS || SingleText == UNICODE_PS)
+					if (SingleText == UNICODE_LINE_SEPARATOR || SingleText == UNICODE_PARAGRAPH_SEPARATOR)
 					{
 						FileBuffer.get()[Index] = 0;
 						FileBuffer.get()[Index + 1U] = 0;
@@ -130,12 +144,12 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 						continue;
 					}
 				//Space format
-					else if (SingleText == UNICODE_MVS || SingleText == UNICODE_NUT || SingleText == UNICODE_MUTTON || 
-						SingleText == UNICODE_TPES || SingleText == UNICODE_FPES || SingleText == UNICODE_SPES || 
-						SingleText == UNICODE_FS || SingleText == UNICODE_PCS || SingleText == UNICODE_TS || 
-						SingleText == UNICODE_HS || SingleText == UNICODE_ZWSP || SingleText == UNICODE_ZWNJ || 
-						SingleText == UNICODE_ZWJ || SingleText == UNICODE_NNBS || SingleText == UNICODE_MMSP || 
-						SingleText == UNICODE_WJ || SingleText == UNICODE_IS)
+					else if (SingleText == UNICODE_MONGOLIAN_VOWEL_SEPARATOR || SingleText == UNICODE_EN_SPACE || SingleText == UNICODE_EM_SPACE || 
+						SingleText == UNICODE_THICK_SPACE || SingleText == UNICODE_MID_SPACE || SingleText == UNICODE_SIX_PER_EM_SPACE || 
+						SingleText == UNICODE_FIGURE_SPACE || SingleText == UNICODE_PUNCTUATION_SPACE || SingleText == UNICODE_THIN_SPACE || 
+						SingleText == UNICODE_HAIR_SPACE || SingleText == UNICODE_ZERO_WIDTH_SPACE || SingleText == UNICODE_ZERO_WIDTH_NON_JOINER || 
+						SingleText == UNICODE_ZERO_WIDTH_JOINER || SingleText == UNICODE_NARROW_NO_BREAK_SPACE || SingleText == UNICODE_MEDIUM_MATHEMATICAL_SPACE || 
+						SingleText == UNICODE_WORD_JOINER || SingleText == UNICODE_IDEOGRAPHIC_SPACE)
 					{
 						FileBuffer.get()[Index] = ASCII_SPACE;
 						FileBuffer.get()[Index + 1U] = 0;
@@ -144,12 +158,12 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 						continue;
 					}
 				}
-				else if ((UCHAR)FileBuffer.get()[Index] > 0xC0 && Index >= 2U)
+				else if (FileBuffer.get()[Index] > 0xC0 && Index >= 2U)
 				{
 					SingleText = (((uint16_t)(FileBuffer.get()[Index] & 0x1F)) << 6U) + (uint16_t)(FileBuffer.get()[Index] & 0x3F);
 
 				//Next line format
-					if (SingleText == UNICODE_NEL)
+					if (SingleText == UNICODE_NEXT_LINE)
 					{
 						FileBuffer.get()[Index] = 0;
 						FileBuffer.get()[Index + 1U] = ASCII_LF;
@@ -157,7 +171,7 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 						continue;
 					}
 				//Space format
-					if (SingleText == UNICODE_NBS)
+					else if (SingleText == UNICODE_NO_BREAK_SPACE)
 					{
 						FileBuffer.get()[Index] = ASCII_SPACE;
 						FileBuffer.get()[Index + 1U] = 0;
@@ -165,14 +179,14 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 						continue;
 					}
 				}
-				
+
 			//Delete all Non-ASCII.
-				if ((UCHAR)FileBuffer.get()[Index] > ASCII_MAX_NUM)
+				if (FileBuffer.get()[Index] > ASCII_MAX_NUM)
 					FileBuffer.get()[Index] = 0;
 			//Next line format
-				if (FileBuffer.get()[Index] == ASCII_CR && Index + 1U < ReadLength && FileBuffer.get()[Index + 1U] == ASCII_LF)
+				else if (FileBuffer.get()[Index] == ASCII_CR)
 					FileBuffer.get()[Index] = 0;
-				else if (FileBuffer.get()[Index] == ASCII_CR || FileBuffer.get()[Index] == ASCII_VT || FileBuffer.get()[Index] == ASCII_FF)
+				else if (FileBuffer.get()[Index] == ASCII_VT || FileBuffer.get()[Index] == ASCII_FF)
 					FileBuffer.get()[Index] = ASCII_LF;
 
 			//Next text
@@ -181,37 +195,31 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 		}
 		else if (Encoding == CODEPAGE_UTF_16_LE || Encoding == CODEPAGE_UTF_16_BE)
 		{
-			uint16_t *SingleText = nullptr;
 			for (Index = 0;Index < ReadLength;Index += sizeof(uint16_t))
 			{
-				SingleText = (uint16_t *)(FileBuffer.get() + Index);
+				auto SingleText = (uint16_t *)(FileBuffer.get() + Index);
 
 			//Endian
-			#if __BYTE_ORDER == __LITTLE_ENDIAN
+			#if BYTE_ORDER == LITTLE_ENDIAN
 				if (Encoding == CODEPAGE_UTF_16_BE)
-					*SingleText = ntoh16_Force(*SingleText);
+					(*SingleText) = ntoh16_Force(*SingleText);
 			#else
 				if (Encoding == CODEPAGE_UTF_16_LE)
-					*SingleText = ntoh16_Force(*SingleText);
+					(*SingleText) = ntoh16_Force(*SingleText);
 			#endif
 			//Next line format
-				if (*SingleText == ASCII_CR && Index + sizeof(uint16_t) < ReadLength && 
-				#if __BYTE_ORDER == __LITTLE_ENDIAN
-					(Encoding == CODEPAGE_UTF_16_BE && ntoh16_Force(*(SingleText + 1U)) == ASCII_LF || Encoding == CODEPAGE_UTF_16_LE && *(SingleText + 1U) == ASCII_LF))
-				#else
-					(Encoding == CODEPAGE_UTF_16_LE && ntoh16_Force(*(SingleText + 1U)) == ASCII_LF || Encoding == CODEPAGE_UTF_16_BE && *(SingleText + 1U) == ASCII_LF))
-				#endif
-						*SingleText = 0;
-				else if (*SingleText == ASCII_CR || *SingleText == ASCII_VT || *SingleText == ASCII_FF || *SingleText == UNICODE_NEL || 
-					*SingleText == UNICODE_LS || *SingleText == UNICODE_PS)
+				if (*SingleText == ASCII_CR)
+					*SingleText = 0;
+				else if (*SingleText == ASCII_CR || *SingleText == ASCII_VT || *SingleText == ASCII_FF || *SingleText == UNICODE_NEXT_LINE || 
+					*SingleText == UNICODE_LINE_SEPARATOR || *SingleText == UNICODE_PARAGRAPH_SEPARATOR)
 						*SingleText = ASCII_LF;
 			//Space format
-				else if (*SingleText == UNICODE_NBS || *SingleText == UNICODE_MVS || *SingleText == UNICODE_NUT || 
-					*SingleText == UNICODE_MUTTON || *SingleText == UNICODE_TPES || *SingleText == UNICODE_FPES || 
-					*SingleText == UNICODE_SPES || *SingleText == UNICODE_FS || *SingleText == UNICODE_PCS || 
-					*SingleText == UNICODE_TS || *SingleText == UNICODE_HS || *SingleText == UNICODE_ZWSP || 
-					*SingleText == UNICODE_ZWNJ || *SingleText == UNICODE_ZWJ || *SingleText == UNICODE_NNBS || 
-					*SingleText == UNICODE_MMSP || *SingleText == UNICODE_WJ || *SingleText == UNICODE_IS)
+				else if (*SingleText == UNICODE_NO_BREAK_SPACE || *SingleText == UNICODE_MONGOLIAN_VOWEL_SEPARATOR || *SingleText == UNICODE_EN_SPACE || 
+					*SingleText == UNICODE_EM_SPACE || *SingleText == UNICODE_THICK_SPACE || *SingleText == UNICODE_MID_SPACE || 
+					*SingleText == UNICODE_SIX_PER_EM_SPACE || *SingleText == UNICODE_FIGURE_SPACE || *SingleText == UNICODE_PUNCTUATION_SPACE || 
+					*SingleText == UNICODE_THIN_SPACE || *SingleText == UNICODE_HAIR_SPACE || *SingleText == UNICODE_ZERO_WIDTH_SPACE || 
+					*SingleText == UNICODE_ZERO_WIDTH_NON_JOINER || *SingleText == UNICODE_ZERO_WIDTH_JOINER || *SingleText == UNICODE_NARROW_NO_BREAK_SPACE || 
+					*SingleText == UNICODE_MEDIUM_MATHEMATICAL_SPACE || *SingleText == UNICODE_WORD_JOINER || *SingleText == UNICODE_IDEOGRAPHIC_SPACE)
 						*SingleText = ASCII_SPACE;
 			//Delete all Non-ASCII.
 				else if (*SingleText > ASCII_MAX_NUM)
@@ -220,13 +228,12 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 		}
 		else if (Encoding == CODEPAGE_UTF_32_LE || Encoding == CODEPAGE_UTF_32_BE)
 		{
-			uint32_t *SingleText = nullptr;
 			for (Index = 0;Index < ReadLength;Index += sizeof(uint32_t))
 			{
-				SingleText = (uint32_t *)(FileBuffer.get() + Index);
+				auto SingleText = (uint32_t *)(FileBuffer.get() + Index);
 
 			//Endian
-			#if __BYTE_ORDER == __LITTLE_ENDIAN
+			#if BYTE_ORDER == LITTLE_ENDIAN
 				if (Encoding == CODEPAGE_UTF_32_BE)
 					*SingleText = ntoh32_Force(*SingleText);
 			#else
@@ -234,23 +241,18 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 					*SingleText = ntoh32_Force(*SingleText);
 			#endif
 			//Next line format
-				if (*SingleText == ASCII_CR && Index + sizeof(uint32_t) < ReadLength && 
-				#if __BYTE_ORDER == __LITTLE_ENDIAN
-					(Encoding == CODEPAGE_UTF_32_BE && ntoh32_Force(*(SingleText + 1U)) == ASCII_LF || Encoding == CODEPAGE_UTF_32_LE && *(SingleText + 1U) == ASCII_LF))
-				#else
-					(Encoding == CODEPAGE_UTF_32_LE && ntoh32_Force(*(SingleText + 1U)) == ASCII_LF || Encoding == CODEPAGE_UTF_32_BE && *(SingleText + 1U) == ASCII_LF))
-				#endif
-						*SingleText = 0;
-				else if (*SingleText == ASCII_CR || *SingleText == ASCII_VT || *SingleText == ASCII_FF || *SingleText == UNICODE_NEL || 
-					*SingleText == UNICODE_LS || *SingleText == UNICODE_PS)
+				if (*SingleText == ASCII_CR)
+					*SingleText = 0;
+				else if (*SingleText == ASCII_CR || *SingleText == ASCII_VT || *SingleText == ASCII_FF || *SingleText == UNICODE_NEXT_LINE || 
+					*SingleText == UNICODE_LINE_SEPARATOR || *SingleText == UNICODE_PARAGRAPH_SEPARATOR)
 						*SingleText = ASCII_LF;
 			//Space format
-				else if (*SingleText == UNICODE_NBS || *SingleText == UNICODE_MVS || *SingleText == UNICODE_NUT || 
-					*SingleText == UNICODE_MUTTON || *SingleText == UNICODE_TPES || *SingleText == UNICODE_FPES || 
-					*SingleText == UNICODE_SPES || *SingleText == UNICODE_FS || *SingleText == UNICODE_PCS || 
-					*SingleText == UNICODE_TS || *SingleText == UNICODE_HS || *SingleText == UNICODE_ZWSP || 
-					*SingleText == UNICODE_ZWNJ || *SingleText == UNICODE_ZWJ || *SingleText == UNICODE_NNBS || 
-					*SingleText == UNICODE_MMSP || *SingleText == UNICODE_WJ || *SingleText == UNICODE_IS)
+				else if (*SingleText == UNICODE_NO_BREAK_SPACE || *SingleText == UNICODE_MONGOLIAN_VOWEL_SEPARATOR || *SingleText == UNICODE_EN_SPACE || 
+					*SingleText == UNICODE_EM_SPACE || *SingleText == UNICODE_THICK_SPACE || *SingleText == UNICODE_MID_SPACE || 
+					*SingleText == UNICODE_SIX_PER_EM_SPACE || *SingleText == UNICODE_FIGURE_SPACE || *SingleText == UNICODE_PUNCTUATION_SPACE || 
+					*SingleText == UNICODE_THIN_SPACE || *SingleText == UNICODE_HAIR_SPACE || *SingleText == UNICODE_ZERO_WIDTH_SPACE || 
+					*SingleText == UNICODE_ZERO_WIDTH_NON_JOINER || *SingleText == UNICODE_ZERO_WIDTH_JOINER || *SingleText == UNICODE_NARROW_NO_BREAK_SPACE || 
+					*SingleText == UNICODE_MEDIUM_MATHEMATICAL_SPACE || *SingleText == UNICODE_WORD_JOINER || *SingleText == UNICODE_IDEOGRAPHIC_SPACE)
 						*SingleText = ASCII_SPACE;
 			//Delete all Non-ASCII.
 				else if (*SingleText > ASCII_MAX_NUM)
@@ -260,68 +262,76 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 		else {
 			switch (InputType)
 			{
-				case READ_TEXT_HOSTS: //ReadHosts
+				case READ_TEXT_TYPE::HOSTS: //ReadHosts
 				{
-					PrintError(LOG_ERROR_HOSTS, L"Text encoding error", 0, FileList_Hosts.at(FileIndex).FileName.c_str(), Line);
+					PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::PARAMETER, L"Text encoding error", 0, FileList_Hosts.at(FileIndex).FileName.c_str(), 0);
 				}break;
-				case READ_TEXT_IPFILTER: //ReadIPFilter
+				case READ_TEXT_TYPE::IPFILTER: //ReadIPFilter
 				{
-					PrintError(LOG_ERROR_IPFILTER, L"Text encoding error", 0, FileList_IPFilter.at(FileIndex).FileName.c_str(), Line);
+					PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::PARAMETER, L"Text encoding error", 0, FileList_IPFilter.at(FileIndex).FileName.c_str(), 0);
 				}break;
-				case READ_TEXT_PARAMETER: //ReadParameter
+				case READ_TEXT_TYPE::PARAMETER_NORMAL: //ReadParameter
 				{
-					PrintError(LOG_ERROR_PARAMETER, L"Text encoding error", 0, ConfigFileList.at(FileIndex).c_str(), Line);
+					PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::PARAMETER, L"Text encoding error", 0, FileList_Config.at(FileIndex).FileName.c_str(), 0);
+				}break;
+				case READ_TEXT_TYPE::PARAMETER_MONITOR: //ReadParameter(Monitor mode)
+				{
+					PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::PARAMETER, L"Text encoding error", 0, FileList_Config.at(FileIndex).FileName.c_str(), 0);
 				}break;
 			}
-			
+
 			return false;
 		}
 
 	//Delete all null characters.
 		for (Index = 0;Index < ReadLength;++Index)
 		{
-			if ((UCHAR)FileBuffer.get()[Index] > 0)
+			if (FileBuffer.get()[Index] > 0)
 			{
-				TextBuffer.get()[strnlen_s(TextBuffer.get(), FILE_BUFFER_SIZE)] = FileBuffer.get()[Index];
+				TextBuffer.get()[strnlen_s((const char *)TextBuffer.get(), FILE_BUFFER_SIZE)] = FileBuffer.get()[Index];
 
 			//Mark next line format.
-				if (!NewLine_Point && FileBuffer.get()[Index] == ASCII_LF)
-					NewLine_Point = true;
+				if (!NewLinePoint && FileBuffer.get()[Index] == ASCII_LF)
+					NewLinePoint = true;
 			}
 		}
 
 		memset(FileBuffer.get(), 0, FILE_BUFFER_SIZE);
 
-	//Lines length check
-		if (!NewLine_Point && ReadLength == FILE_BUFFER_SIZE)
+	//Line length check
+		if (!NewLinePoint && ReadLength == FILE_BUFFER_SIZE)
 		{
 			switch (InputType)
 			{
-				case READ_TEXT_HOSTS: //ReadHosts
+				case READ_TEXT_TYPE::HOSTS: //ReadHosts
 				{
-					PrintError(LOG_ERROR_HOSTS, L"Data of a line is too long", 0, FileList_Hosts.at(FileIndex).FileName.c_str(), Line);
+					PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::HOSTS, L"Data of a line is too long", 0, FileList_Hosts.at(FileIndex).FileName.c_str(), Line);
 				}break;
-				case READ_TEXT_IPFILTER: //ReadIPFilter
+				case READ_TEXT_TYPE::IPFILTER: //ReadIPFilter
 				{
-					PrintError(LOG_ERROR_IPFILTER, L"Data of a line is too long", 0, FileList_IPFilter.at(FileIndex).FileName.c_str(), Line);
+					PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::IPFILTER, L"Data of a line is too long", 0, FileList_IPFilter.at(FileIndex).FileName.c_str(), Line);
 				}break;
-				case READ_TEXT_PARAMETER: //ReadParameter
+				case READ_TEXT_TYPE::PARAMETER_NORMAL: //ReadParameter
 				{
-					PrintError(LOG_ERROR_PARAMETER, L"Data of a line is too long", 0, ConfigFileList.at(FileIndex).c_str(), Line);
+					PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::PARAMETER, L"Data of a line is too long", 0, FileList_Config.at(FileIndex).FileName.c_str(), Line);
+				}break;
+				case READ_TEXT_TYPE::PARAMETER_MONITOR: //ReadParameter(Monitor mode)
+				{
+					PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::PARAMETER, L"Data of a line is too long", 0, FileList_Config.at(FileIndex).FileName.c_str(), Line);
 				}break;
 			}
 
 			return false;
 		}
 		else {
-			NewLine_Point = false;
+			NewLinePoint = false;
 		}
 
 	//Read data.
-		for (Index = 0;Index < strnlen_s(TextBuffer.get(), FILE_BUFFER_SIZE);++Index)
+		for (Index = 0;Index < strnlen_s((const char *)TextBuffer.get(), FILE_BUFFER_SIZE);++Index)
 		{
 		//New line
-			if (TextBuffer.get()[Index] == ASCII_LF || Index + 1U == strnlen_s(TextBuffer.get(), FILE_BUFFER_SIZE) && feof((FILE *)Input))
+			if (TextBuffer.get()[Index] == ASCII_LF || (Index + 1U == strnlen_s((const char *)TextBuffer.get(), FILE_BUFFER_SIZE) && feof((FILE *)FileHandle)))
 			{
 				++Line;
 
@@ -330,24 +340,29 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 				{
 					switch (InputType)
 					{
-						case READ_TEXT_HOSTS: //ReadHosts
+						case READ_TEXT_TYPE::HOSTS: //ReadHosts
 						{
-							ReadHostsData(TextData, FileIndex, Line, LabelType, IsLabelComments);
+							ReadHostsData(TextData, FileIndex, Line, LabelType_Hosts, IsStopLabel);
 						}break;
-						case READ_TEXT_IPFILTER: //ReadIPFilter
+						case READ_TEXT_TYPE::IPFILTER: //ReadIPFilter
 						{
-							ReadIPFilterData(TextData, FileIndex, Line, LabelType, IsLabelComments);
+							ReadIPFilterData(TextData, FileIndex, Line, LabelType_IPFilter, IsStopLabel);
 						}break;
-						case READ_TEXT_PARAMETER: //ReadParameter
+						case READ_TEXT_TYPE::PARAMETER_NORMAL: //ReadParameter
 						{
-							if (!ReadParameterData(TextData, FileIndex, Line, IsLabelComments))
+							if (!ReadParameterData(TextData, FileIndex, true, Line))
+								return false;
+						}break;
+						case READ_TEXT_TYPE::PARAMETER_MONITOR: //ReadParameter(Monitor mode)
+						{
+							if (!ReadParameterData(TextData, FileIndex, false, Line))
 								return false;
 						}break;
 					}
 				}
 
 			//Next step
-				if (Index + 1U == strnlen_s(TextBuffer.get(), FILE_BUFFER_SIZE) && feof((FILE *)Input))
+				if (Index + 1U == strnlen_s((const char *)TextBuffer.get(), FILE_BUFFER_SIZE) && feof((FILE *)FileHandle))
 					return true;
 				else 
 					TextData.clear();
@@ -363,262 +378,408 @@ bool __fastcall ReadText(const FILE *Input, const size_t InputType, const size_t
 	return true;
 }
 
-//Check Multi-line comments
-bool __fastcall ReadMultiLineComments(std::string &Data, bool &IsLabelComments)
-{
-	if (IsLabelComments)
-	{
-		if (Data.find("*/") != std::string::npos && Data.find("*/") + strlen("*/") < Data.length())
-		{
-			std::string DataTemp(Data, Data.find("*/") + strlen("*/"), Data.length() - (Data.find("*/") + strlen("*/")));
-			Data = DataTemp;
-			IsLabelComments = false;
-		}
-		else {
-			return false;
-		}
-	}
-	while (Data.find("/*") != std::string::npos)
-	{
-		if (Data.find("*/") == std::string::npos)
-		{
-			Data.erase(Data.find("/*"), Data.length() - Data.find("/*"));
-			IsLabelComments = true;
-			break;
-		}
-		else {
-			Data.erase(Data.find("/*"), Data.find("*/") - Data.find("/*") + strlen("/*"));
-		}
-	}
-
-	return true;
-}
-
 //Read parameter from file
-bool __fastcall ReadParameter(void)
-{
-//Initialization
-	FILE *Input = nullptr;
-	size_t Index = 0;
-
-//List file.
-	std::wstring ConfigFileName;
-	const wchar_t *ConfigFileNameList[]{CONFIG_FILE_NAME_LIST};
-	for (Index = 0;Index < sizeof(ConfigFileNameList) / sizeof(PWSTR);++Index)
-	{
-		ConfigFileName = Parameter.Path_Global->front();
-		ConfigFileName.append(ConfigFileNameList[Index]);
-		ConfigFileList.push_back(ConfigFileName);
-	}
-	ConfigFileName.clear();
-	ConfigFileName.shrink_to_fit();
-#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-	std::string sConfigFileName;
-	const char *sConfigFileNameList[]{CONFIG_FILE_NAME_LIST_STRING};
-	for (Index = 0;Index < sizeof(sConfigFileNameList) / sizeof(PSTR);++Index)
-	{
-		sConfigFileName = Parameter.sPath_Global->front();
-		sConfigFileName.append(sConfigFileNameList[Index]);
-		sConfigFileList.push_back(sConfigFileName);
-	}
-	sConfigFileName.clear();
-	sConfigFileName.shrink_to_fit();
-#endif
-
-//Open file.
-	for (Index = 0;Index < ConfigFileList.size();++Index)
-	{
-	#if defined(PLATFORM_WIN)
-		if (_wfopen_s(&Input, ConfigFileList.at(Index).c_str(), L"rb") != EXIT_SUCCESS || Input == nullptr)
-	#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-		Input = fopen(sConfigFileList.at(Index).c_str(), "rb");
-		if (Input == nullptr)
-	#endif
-		{
-		//Check all configuration files.
-			if (Index + 1U == ConfigFileList.size())
-			{
-				PrintError(LOG_ERROR_PARAMETER, L"Cannot open any configuration files", 0, nullptr, 0);
-				return false;
-			}
-
-			continue;
-		}
-		else {
-			break;
-		}
-	}
-
-//Check whole file size.
-#if defined(PLATFORM_WIN)
-	std::shared_ptr<WIN32_FILE_ATTRIBUTE_DATA> File_WIN32_FILE_ATTRIBUTE_DATA(new WIN32_FILE_ATTRIBUTE_DATA());
-	memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-	if (GetFileAttributesExW(ConfigFileList.at(Index).c_str(), GetFileExInfoStandard, File_WIN32_FILE_ATTRIBUTE_DATA.get()) != FALSE)
-	{
-		std::shared_ptr<LARGE_INTEGER> ConfigFileSize(new LARGE_INTEGER());
-		memset(ConfigFileSize.get(), 0, sizeof(LARGE_INTEGER));
-		ConfigFileSize->HighPart = File_WIN32_FILE_ATTRIBUTE_DATA->nFileSizeHigh;
-		ConfigFileSize->LowPart = File_WIN32_FILE_ATTRIBUTE_DATA->nFileSizeLow;
-		if (ConfigFileSize->QuadPart >= DEFAULT_FILE_MAXSIZE)
-		{
-			PrintError(LOG_ERROR_PARAMETER, L"Configuration file is too large", 0, ConfigFileList.at(Index).c_str(), 0);
-			return false;
-		}
-	}
-	File_WIN32_FILE_ATTRIBUTE_DATA.reset();
-#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-	std::shared_ptr<struct stat> FileStat(new struct stat());
-	memset(FileStat.get(), 0, sizeof(struct stat));
-	if (stat(sConfigFileList.at(Index).c_str(), FileStat.get()) == EXIT_SUCCESS && FileStat->st_size >= (off_t)DEFAULT_FILE_MAXSIZE)
-	{
-		PrintError(LOG_ERROR_PARAMETER, L"Configuration file is too large", 0, ConfigFileList.at(Index).c_str(), 0);
-		return false;
-	}
-	FileStat.reset();
-#endif
-
-//Read data.
-	if (Input != nullptr)
-	{
-		if (!ReadText(Input, READ_TEXT_PARAMETER, Index))
-			return false;
-		fclose(Input);
-	}
-	else {
-		PrintError(LOG_ERROR_PARAMETER, L"Cannot open any configuration files", 0, nullptr, 0);
-		return false;
-	}
-
-//Check parameter list and set default values.
-	return ParameterCheckAndSetting(Index);
-}
-
-//Read IPFilter from file
-void __fastcall ReadIPFilter(void)
+bool ReadParameter(
+	const bool IsFirstRead)
 {
 	size_t FileIndex = 0;
 
 //Create file list.
-	for (size_t Index = 0;Index < Parameter.Path_Global->size();++Index)
+	if (IsFirstRead)
 	{
-		FILE_DATA FileDataTemp;
-		for (FileIndex = 0;FileIndex < Parameter.FileList_IPFilter->size();++FileIndex)
-		{
-			FileDataTemp.FileName.clear();
-		#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-			FileDataTemp.sFileName.clear();
-		#endif
-			FileDataTemp.ModificationTime = 0;
+		const wchar_t *WCS_ConfigFileNameList[]CONFIG_FILE_NAME_LIST;
+	#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+		const char *MBS_ConfigFileNameList[]CONFIG_FILE_NAME_LIST_MBS;
+	#endif
 
-		//Add to global list.
-			FileDataTemp.FileName.append(Parameter.Path_Global->at(Index));
-			FileDataTemp.FileName.append(Parameter.FileList_IPFilter->at(FileIndex));
-		#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-			FileDataTemp.sFileName.append(Parameter.sPath_Global->at(Index));
-			FileDataTemp.sFileName.append(Parameter.sFileList_IPFilter->at(FileIndex));
+		FILE_DATA ConfigFileTemp;
+		for (FileIndex = 0;FileIndex < sizeof(WCS_ConfigFileNameList) / sizeof(wchar_t *);++FileIndex)
+		{
+			ConfigFileTemp.FileName = GlobalRunningStatus.Path_Global->front();
+			ConfigFileTemp.FileName.append(WCS_ConfigFileNameList[FileIndex]);
+		#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+			ConfigFileTemp.MBS_FileName = GlobalRunningStatus.MBS_Path_Global->front();
+			ConfigFileTemp.MBS_FileName.append(MBS_ConfigFileNameList[FileIndex]);
 		#endif
-			FileList_IPFilter.push_back(FileDataTemp);
+			ConfigFileTemp.ModificationTime = 0;
+
+			FileList_Config.push_back(ConfigFileTemp);
 		}
 	}
 
 //Initialization
-	FILE *Input = nullptr;
-	auto IsFileModified = false, IsLocalServerPrint = false;
+	FILE *FileHandle = nullptr;
 #if defined(PLATFORM_WIN)
-	std::shared_ptr<LARGE_INTEGER> File_LARGE_INTEGER(new LARGE_INTEGER());
-	std::shared_ptr<WIN32_FILE_ATTRIBUTE_DATA> File_WIN32_FILE_ATTRIBUTE_DATA(new WIN32_FILE_ATTRIBUTE_DATA());
-	memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-	memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-	std::shared_ptr<struct stat> FileStat(new struct stat());
-	memset(FileStat.get(), 0, sizeof(struct stat));
+	WIN32_FILE_ATTRIBUTE_DATA FileAttributeData;
+	memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+	struct stat FileStatData;
+	memset(&FileStatData, 0, sizeof(FileStatData));
 #endif
-	std::unique_lock<std::mutex> IPFilterFileMutex(IPFilterFileLock);
-	IPFilterFileMutex.unlock();
-	
-//Files Monitor
-	for (;;)
-	{
-		IsFileModified = false;
 
-	//Check File lists.
-		for (FileIndex = 0;FileIndex < FileList_IPFilter.size();++FileIndex)
+//Read parameters at first.
+	if (IsFirstRead)
+	{
+	//Open configuration file.
+		for (FileIndex = 0;FileIndex < FileList_Config.size();++FileIndex)
 		{
+		#if defined(PLATFORM_WIN)
+			if (_wfopen_s(&FileHandle, FileList_Config.at(FileIndex).FileName.c_str(), L"rb") != 0 || FileHandle == nullptr)
+		#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+			FileHandle = fopen(FileList_Config.at(FileIndex).MBS_FileName.c_str(), "rb");
+			if (FileHandle == nullptr)
+		#endif
+			{
+			//Check all configuration files.
+				if (FileIndex + 1U == FileList_Config.size())
+				{
+					PrintError(LOG_LEVEL_TYPE::LEVEL_1, LOG_ERROR_TYPE::PARAMETER, L"Cannot open any configuration files", 0, nullptr, 0);
+					return false;
+				}
+			}
+			else {
+				break;
+			}
+		}
+
+	//Check whole file size.
+	#if defined(PLATFORM_WIN)
+		if (GetFileAttributesExW(
+				FileList_Config.at(FileIndex).FileName.c_str(), 
+				GetFileExInfoStandard, 
+				&FileAttributeData) != FALSE)
+		{
+			LARGE_INTEGER ConfigFileSize;
+			memset(&ConfigFileSize, 0, sizeof(ConfigFileSize));
+			ConfigFileSize.HighPart = FileAttributeData.nFileSizeHigh;
+			ConfigFileSize.LowPart = FileAttributeData.nFileSizeLow;
+			if (ConfigFileSize.QuadPart < 0 || (uint64_t)ConfigFileSize.QuadPart >= FILE_READING_MAXSIZE)
+			{
+				PrintError(LOG_LEVEL_TYPE::LEVEL_3, LOG_ERROR_TYPE::PARAMETER, L"Configuration file is too large", 0, FileList_Config.at(FileIndex).FileName.c_str(), 0);
+				return false;
+			}
+		}
+	#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+		if (stat(FileList_Config.at(FileIndex).MBS_FileName.c_str(), &FileStatData) == 0 && FileStatData.st_size >= (off_t)FILE_READING_MAXSIZE)
+		{
+			PrintError(LOG_LEVEL_TYPE::LEVEL_3, LOG_ERROR_TYPE::PARAMETER, L"Configuration file is too large", 0, FileList_Config.at(FileIndex).FileName.c_str(), 0);
+			return false;
+		}
+	#endif
+
+	//Read data.
+		if (FileHandle != nullptr)
+		{
+			if (!ReadText(FileHandle, READ_TEXT_TYPE::PARAMETER_NORMAL, FileIndex))
+			{
+				fclose(FileHandle);
+				return false;
+			}
+
+			fclose(FileHandle);
+		}
+		else {
+			PrintError(LOG_LEVEL_TYPE::LEVEL_1, LOG_ERROR_TYPE::PARAMETER, L"Cannot open any configuration files", 0, nullptr, 0);
+			return false;
+		}
+
+	//Check parameter list and set default values.
+		return Parameter_CheckSetting(true, FileIndex);
+	}
+//Monitor mode
+	else {
+	//Open configuration file.
+		for (;;)
+		{
+			for (FileIndex = 0;FileIndex < FileList_Config.size();++FileIndex)
+			{
+			#if defined(PLATFORM_WIN)
+				if (_wfopen_s(&FileHandle, FileList_Config.at(FileIndex).FileName.c_str(), L"rb") != 0 || FileHandle == nullptr)
+			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+				FileHandle = fopen(FileList_Config.at(FileIndex).MBS_FileName.c_str(), "rb");
+				if (FileHandle == nullptr)
+			#endif
+				{
+				//Check all configuration files.
+					if (FileIndex + 1U == FileList_Config.size())
+						PrintError(LOG_LEVEL_TYPE::LEVEL_1, LOG_ERROR_TYPE::PARAMETER, L"Cannot open any configuration files", 0, nullptr, 0);
+				}
+				else {
+					fclose(FileHandle);
+					FileHandle = nullptr;
+
+					goto StopLoop;
+				}
+			}
+
+			Sleep(Parameter.FileRefreshTime);
+		}
+
+	//Jump here to stop loop.
+	StopLoop:
+	#if defined(PLATFORM_WIN)
+		LARGE_INTEGER FileSizeData;
+		memset(&FileSizeData, 0, sizeof(FileSizeData));
+	#endif
+		auto InnerIsFirstRead = true, IsFileModified = false;
+
+	//File Monitor
+		for (;;)
+		{
+			IsFileModified = false;
+
 		//Get attributes of file.
 		#if defined(PLATFORM_WIN)
-			if (GetFileAttributesExW(FileList_IPFilter.at(FileIndex).FileName.c_str(), GetFileExInfoStandard, File_WIN32_FILE_ATTRIBUTE_DATA.get()) == FALSE)
+			if (GetFileAttributesExW(
+					FileList_Config.at(FileIndex).FileName.c_str(), 
+					GetFileExInfoStandard, 
+					&FileAttributeData) == FALSE)
 			{
-				memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-		#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-			if (stat(FileList_IPFilter.at(FileIndex).sFileName.c_str(), FileStat.get()) != 0)
+				memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+		#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+			if (stat(FileList_Config.at(FileIndex).MBS_FileName.c_str(), &FileStatData) != 0)
 			{
-				memset(FileStat.get(), 0, sizeof(struct stat));
+				memset(&FileStatData, 0, sizeof(FileStatData));
 		#endif
-				if (FileList_IPFilter.at(FileIndex).ModificationTime > 0)
-					IsFileModified = true;
-				FileList_IPFilter.at(FileIndex).ModificationTime = 0;
-
-				ClearModificatingListData(READ_TEXT_IPFILTER, FileIndex);
+				FileList_Config.at(FileIndex).ModificationTime = 0;
 			}
 			else {
 			//Check whole file size.
 			#if defined(PLATFORM_WIN)
-				File_LARGE_INTEGER->HighPart = File_WIN32_FILE_ATTRIBUTE_DATA->nFileSizeHigh;
-				File_LARGE_INTEGER->LowPart = File_WIN32_FILE_ATTRIBUTE_DATA->nFileSizeLow;
-				if (File_LARGE_INTEGER->QuadPart >= DEFAULT_FILE_MAXSIZE)
-			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-				if (FileStat->st_size >= (off_t)DEFAULT_FILE_MAXSIZE)
+				FileSizeData.HighPart = FileAttributeData.nFileSizeHigh;
+				FileSizeData.LowPart = FileAttributeData.nFileSizeLow;
+				if (FileSizeData.QuadPart < 0 || (uint64_t)FileSizeData.QuadPart >= FILE_READING_MAXSIZE)
+			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+				if (FileStatData.st_size >= (off_t)FILE_READING_MAXSIZE)
 			#endif
 				{
-					PrintError(LOG_ERROR_PARAMETER, L"IPFilter file size is too large", 0, FileList_IPFilter.at(FileIndex).FileName.c_str(), 0);
+					PrintError(LOG_LEVEL_TYPE::LEVEL_3, LOG_ERROR_TYPE::PARAMETER, L"Configuration file size is too large", 0, FileList_Config.at(FileIndex).FileName.c_str(), 0);
 
 				#if defined(PLATFORM_WIN)
-					memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-					memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-					memset(FileStat.get(), 0, sizeof(struct stat));
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					memset(&FileStatData, 0, sizeof(FileStatData));
 				#endif
-					if (FileList_IPFilter.at(FileIndex).ModificationTime > 0)
-						IsFileModified = true;
-					FileList_IPFilter.at(FileIndex).ModificationTime = 0;
+					FileList_Config.at(FileIndex).ModificationTime = 0;
 
-					ClearModificatingListData(READ_TEXT_IPFILTER, FileIndex);
+					Sleep(Parameter.FileRefreshTime);
 					continue;
 				}
 
 			//Check modification time of file.
 			#if defined(PLATFORM_WIN)
-				memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-				File_LARGE_INTEGER->HighPart = File_WIN32_FILE_ATTRIBUTE_DATA->ftLastWriteTime.dwHighDateTime;
-				File_LARGE_INTEGER->LowPart = File_WIN32_FILE_ATTRIBUTE_DATA->ftLastWriteTime.dwLowDateTime;
-				if (FileList_IPFilter.at(FileIndex).ModificationTime == 0 || File_LARGE_INTEGER->QuadPart != FileList_IPFilter.at(FileIndex).ModificationTime)
+				memset(&FileSizeData, 0, sizeof(FileSizeData));
+				FileSizeData.HighPart = FileAttributeData.ftLastWriteTime.dwHighDateTime;
+				FileSizeData.LowPart = FileAttributeData.ftLastWriteTime.dwLowDateTime;
+				if (FileList_Config.at(FileIndex).ModificationTime == 0 || FileSizeData.QuadPart != FileList_Config.at(FileIndex).ModificationTime)
 				{
-					FileList_IPFilter.at(FileIndex).ModificationTime = File_LARGE_INTEGER->QuadPart;
-					memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-					memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-				if (FileList_IPFilter.at(FileIndex).ModificationTime == 0 || FileStat->st_mtime != FileList_IPFilter.at(FileIndex).ModificationTime)
+					FileList_Config.at(FileIndex).ModificationTime = FileSizeData.QuadPart;
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+				if (FileList_Config.at(FileIndex).ModificationTime == 0 || FileStatData.st_mtime != FileList_Config.at(FileIndex).ModificationTime)
 				{
-					FileList_IPFilter.at(FileIndex).ModificationTime = FileStat->st_mtime;
-					memset(FileStat.get(), 0, sizeof(struct stat));
+					FileList_Config.at(FileIndex).ModificationTime = FileStatData.st_mtime;
+					memset(&FileStatData, 0, sizeof(FileStatData));
 			#endif
-					ClearModificatingListData(READ_TEXT_IPFILTER, FileIndex);
 					IsFileModified = true;
 
 				//Read file.
 				#if defined(PLATFORM_WIN)
-					if (_wfopen_s(&Input, FileList_IPFilter.at(FileIndex).FileName.c_str(), L"rb") == EXIT_SUCCESS)
+					if (_wfopen_s(&FileHandle, FileList_Config.at(FileIndex).FileName.c_str(), L"rb") == 0)
 					{
-				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-					Input = fopen(FileList_IPFilter.at(FileIndex).sFileName.c_str(), "rb");
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					FileHandle = fopen(FileList_Config.at(FileIndex).MBS_FileName.c_str(), "rb");
 				#endif
-						if (Input == nullptr)
+						if (FileHandle == nullptr)
+						{
+							Sleep(Parameter.FileRefreshTime);
+							continue;
+						}
+						else {
+							if (!InnerIsFirstRead)
+							{
+							//Read data.
+								if (ReadText(FileHandle, READ_TEXT_TYPE::PARAMETER_MONITOR, FileIndex))
+								{
+								//Copy to global list.
+									if (Parameter_CheckSetting(false, FileIndex))
+									{
+										ParameterModificating.MonitorItemToUsing(&Parameter);
+									#if defined(ENABLE_LIBSODIUM)
+										if (Parameter.IsDNSCurve)
+											DNSCurveParameterModificating.MonitorItemToUsing(&DNSCurveParameter);
+									#endif
+									}
+								}
+
+							//Reset modificating list.
+								ParameterModificating.MonitorItemReset();
+							#if defined(ENABLE_LIBSODIUM)
+								if (Parameter.IsDNSCurve)
+									DNSCurveParameterModificating.MonitorItemReset();
+							#endif
+							}
+							else {
+								InnerIsFirstRead = false;
+							}
+
+							fclose(FileHandle);
+							FileHandle = nullptr;
+						}
+				#if defined(PLATFORM_WIN)
+					}
+				#endif
+				}
+				else {
+				#if defined(PLATFORM_WIN)
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					memset(&FileStatData, 0, sizeof(FileStatData));
+				#endif
+				}
+			}
+
+		//Flush DNS cache and Auto-refresh
+			if (IsFileModified)
+				Flush_DNS_Cache(nullptr);
+
+			Sleep(Parameter.FileRefreshTime);
+		}
+	}
+
+//Monitor terminated
+	PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::SYSTEM, L"Read Parameter module Monitor terminated", 0, nullptr, 0);
+	return false;
+}
+
+//Read IPFilter from file
+void ReadIPFilter(
+	void)
+{
+	size_t FileIndex = 0;
+
+//Create file list.
+	for (size_t Index = 0;Index < GlobalRunningStatus.Path_Global->size();++Index)
+	{
+		FILE_DATA FileDataTemp;
+		for (FileIndex = 0;FileIndex < GlobalRunningStatus.FileList_IPFilter->size();++FileIndex)
+		{
+		//Add to global list.
+			FileDataTemp.FileName = GlobalRunningStatus.Path_Global->at(Index);
+			FileDataTemp.FileName.append(GlobalRunningStatus.FileList_IPFilter->at(FileIndex));
+		#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+			FileDataTemp.MBS_FileName = GlobalRunningStatus.MBS_Path_Global->at(Index);
+			FileDataTemp.MBS_FileName.append(GlobalRunningStatus.MBS_FileList_IPFilter->at(FileIndex));
+		#endif
+			FileDataTemp.ModificationTime = 0;
+
+			FileList_IPFilter.push_back(FileDataTemp);
+		}
+	}
+
+//Initialization
+	FILE *FileHandle = nullptr;
+	auto IsFileModified = false;
+#if defined(PLATFORM_WIN)
+	WIN32_FILE_ATTRIBUTE_DATA FileAttributeData;
+	LARGE_INTEGER FileSizeData;
+	memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+	memset(&FileSizeData, 0, sizeof(FileSizeData));
+#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+	struct stat FileStatData;
+	memset(&FileStatData, 0, sizeof(FileStatData));
+#endif
+	std::unique_lock<std::mutex> IPFilterFileMutex(IPFilterFileLock, std::defer_lock);
+
+//File Monitor
+	for (;;)
+	{
+		IsFileModified = false;
+
+	//Check file list.
+		for (FileIndex = 0;FileIndex < FileList_IPFilter.size();++FileIndex)
+		{
+		//Get attributes of file.
+		#if defined(PLATFORM_WIN)
+			if (GetFileAttributesExW(
+					FileList_IPFilter.at(FileIndex).FileName.c_str(), 
+					GetFileExInfoStandard, 
+					&FileAttributeData) == FALSE)
+			{
+				memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+		#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+			if (stat(FileList_IPFilter.at(FileIndex).MBS_FileName.c_str(), &FileStatData) != 0)
+			{
+				memset(&FileStatData, 0, sizeof(FileStatData));
+		#endif
+				if (FileList_IPFilter.at(FileIndex).ModificationTime > 0)
+					IsFileModified = true;
+				FileList_IPFilter.at(FileIndex).ModificationTime = 0;
+
+				ClearModificatingListData(READ_TEXT_TYPE::IPFILTER, FileIndex);
+			}
+			else {
+			//Check whole file size.
+			#if defined(PLATFORM_WIN)
+				FileSizeData.HighPart = FileAttributeData.nFileSizeHigh;
+				FileSizeData.LowPart = FileAttributeData.nFileSizeLow;
+				if (FileSizeData.QuadPart < 0 || (uint64_t)FileSizeData.QuadPart >= FILE_READING_MAXSIZE)
+			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+				if (FileStatData.st_size >= (off_t)FILE_READING_MAXSIZE)
+			#endif
+				{
+					PrintError(LOG_LEVEL_TYPE::LEVEL_3, LOG_ERROR_TYPE::PARAMETER, L"IPFilter file size is too large", 0, FileList_IPFilter.at(FileIndex).FileName.c_str(), 0);
+
+				#if defined(PLATFORM_WIN)
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					memset(&FileStatData, 0, sizeof(FileStatData));
+				#endif
+					if (FileList_IPFilter.at(FileIndex).ModificationTime > 0)
+						IsFileModified = true;
+					FileList_IPFilter.at(FileIndex).ModificationTime = 0;
+
+					ClearModificatingListData(READ_TEXT_TYPE::IPFILTER, FileIndex);
+					continue;
+				}
+
+			//Check modification time of file.
+			#if defined(PLATFORM_WIN)
+				memset(&FileSizeData, 0, sizeof(FileSizeData));
+				FileSizeData.HighPart = FileAttributeData.ftLastWriteTime.dwHighDateTime;
+				FileSizeData.LowPart = FileAttributeData.ftLastWriteTime.dwLowDateTime;
+				if (FileList_IPFilter.at(FileIndex).ModificationTime == 0 || FileSizeData.QuadPart != FileList_IPFilter.at(FileIndex).ModificationTime)
+				{
+					FileList_IPFilter.at(FileIndex).ModificationTime = FileSizeData.QuadPart;
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+				if (FileList_IPFilter.at(FileIndex).ModificationTime == 0 || FileStatData.st_mtime != FileList_IPFilter.at(FileIndex).ModificationTime)
+				{
+					FileList_IPFilter.at(FileIndex).ModificationTime = FileStatData.st_mtime;
+					memset(&FileStatData, 0, sizeof(FileStatData));
+			#endif
+					ClearModificatingListData(READ_TEXT_TYPE::IPFILTER, FileIndex);
+					IsFileModified = true;
+
+				//Read file.
+				#if defined(PLATFORM_WIN)
+					if (_wfopen_s(&FileHandle, FileList_IPFilter.at(FileIndex).FileName.c_str(), L"rb") == 0)
+					{
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					FileHandle = fopen(FileList_IPFilter.at(FileIndex).MBS_FileName.c_str(), "rb");
+				#endif
+						if (FileHandle == nullptr)
 						{
 							continue;
 						}
 						else {
 						//Scan global list.
-							DIFFERNET_IPFILTER_FILE_SET IPFilterFileSetTemp;
+							DIFFERNET_FILE_SET_IPFILTER IPFilterFileSetTemp;
 							for (auto IPFilterFileSetIter = IPFilterFileSetModificating->begin();IPFilterFileSetIter != IPFilterFileSetModificating->end();++IPFilterFileSetIter)
 							{
 								if (IPFilterFileSetIter->FileIndex == FileIndex)
@@ -639,9 +800,9 @@ void __fastcall ReadIPFilter(void)
 							}
 
 						//Read data.
-							ReadText(Input, READ_TEXT_IPFILTER, FileIndex);
-							fclose(Input);
-							Input = nullptr;
+							ReadText(FileHandle, READ_TEXT_TYPE::IPFILTER, FileIndex);
+							fclose(FileHandle);
+							FileHandle = nullptr;
 						}
 				#if defined(PLATFORM_WIN)
 					}
@@ -649,10 +810,10 @@ void __fastcall ReadIPFilter(void)
 				}
 				else {
 				#if defined(PLATFORM_WIN)
-					memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-					memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-					memset(FileStat.get(), 0, sizeof(struct stat));
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					memset(&FileStatData, 0, sizeof(FileStatData));
 				#endif
 				}
 			}
@@ -666,194 +827,149 @@ void __fastcall ReadIPFilter(void)
 		}
 
 	//Copy to using list.
+		std::sort(IPFilterFileSetModificating->begin(), IPFilterFileSetModificating->end(), SortCompare_IPFilter);
 		IPFilterFileMutex.lock();
-		*IPFilterFileSetUsing = *IPFilterFileSetModificating;
+		IPFilterFileSetUsing->clear();
 		IPFilterFileSetUsing->shrink_to_fit();
+		*IPFilterFileSetUsing = *IPFilterFileSetModificating;
 		IPFilterFileMutex.unlock();
 		IPFilterFileSetModificating->shrink_to_fit();
 
-	//Check local routing of local servers.
-		if (!IsLocalServerPrint)
-		{
-		//Check local routing list(IPv6).
-			for (auto IPFilterFileSetIter:*IPFilterFileSetModificating)
-			{
-				if (!IPFilterFileSetIter.LocalRoutingList_IPv6.empty())
-				{
-					IsLocalServerPrint = true;
-					break;
-				}
-			}
-
-		//Check local servers(IPv6).
-			if (IsLocalServerPrint)
-			{
-				if (Parameter.DNSTarget.Local_IPv6.AddressData.Storage.ss_family > 0 && !CheckAddressRouting(&Parameter.DNSTarget.Local_IPv6.AddressData.IPv6.sin6_addr, AF_INET6))
-					PrintError(LOG_MESSAGE_NOTICE, L"Address of IPv6 Main Local Server is not in Local Routing list", 0, nullptr, 0);
-				if (Parameter.DNSTarget.Alternate_Local_IPv6.AddressData.Storage.ss_family > 0 && !CheckAddressRouting(&Parameter.DNSTarget.Alternate_Local_IPv6.AddressData.IPv6.sin6_addr, AF_INET6))
-					PrintError(LOG_MESSAGE_NOTICE, L"Address of IPv6 Alternate Local Server is not in Local Routing list", 0, nullptr, 0);
-			}
-
-			IsLocalServerPrint = false;
-
-		//Check local routing list(IPv4).
-			for (auto IPFilterFileSetIter:*IPFilterFileSetModificating)
-			{
-				if (!IPFilterFileSetIter.LocalRoutingList_IPv4.empty())
-				{
-					IsLocalServerPrint = true;
-					break;
-				}
-			}
-
-		//Check local servers(IPv4).
-			if (IsLocalServerPrint)
-			{
-				if (Parameter.DNSTarget.Local_IPv4.AddressData.Storage.ss_family > 0 && !CheckAddressRouting(&Parameter.DNSTarget.Local_IPv4.AddressData.IPv4.sin_addr, AF_INET))
-					PrintError(LOG_MESSAGE_NOTICE, L"Address of IPv4 Main Local Server is not in Local Routing list", 0, nullptr, 0);
-				if (Parameter.DNSTarget.Alternate_Local_IPv4.AddressData.Storage.ss_family > 0 && !CheckAddressRouting(&Parameter.DNSTarget.Alternate_Local_IPv4.AddressData.IPv4.sin_addr, AF_INET))
-					PrintError(LOG_MESSAGE_NOTICE, L"Address of IPv4 Alternate Local Server is not in Local Routing list", 0, nullptr, 0);
-			}
-
-			IsLocalServerPrint = true;
-		}
-
 	//Flush DNS cache and Auto-refresh
-		FlushAllDNSCache();
+		Flush_DNS_Cache(nullptr);
 		Sleep(Parameter.FileRefreshTime);
 	}
 
 //Monitor terminated
-	PrintError(LOG_ERROR_SYSTEM, L"Read IPFilter module Monitor terminated", 0, nullptr, 0);
+	PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::SYSTEM, L"Read IPFilter module Monitor terminated", 0, nullptr, 0);
 	return;
 }
 
 //Read hosts from file
-void __fastcall ReadHosts(void)
+void ReadHosts(
+	void)
 {
 	size_t FileIndex = 0;
 
 //Create file list.
-	for (size_t Index = 0;Index < Parameter.Path_Global->size();++Index)
+	for (size_t Index = 0;Index < GlobalRunningStatus.Path_Global->size();++Index)
 	{
 		FILE_DATA FileDataTemp;
-		for (FileIndex = 0;FileIndex < Parameter.FileList_Hosts->size();++FileIndex)
+		for (FileIndex = 0;FileIndex < GlobalRunningStatus.FileList_Hosts->size();++FileIndex)
 		{
-			FileDataTemp.FileName.clear();
-		#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-			FileDataTemp.sFileName.clear();
+		//Add to global list.
+			FileDataTemp.FileName = GlobalRunningStatus.Path_Global->at(Index);
+			FileDataTemp.FileName.append(GlobalRunningStatus.FileList_Hosts->at(FileIndex));
+		#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+			FileDataTemp.MBS_FileName = GlobalRunningStatus.MBS_Path_Global->at(Index);
+			FileDataTemp.MBS_FileName.append(GlobalRunningStatus.MBS_FileList_Hosts->at(FileIndex));
 		#endif
 			FileDataTemp.ModificationTime = 0;
 
-		//Add to global list.
-			FileDataTemp.FileName.append(Parameter.Path_Global->at(Index));
-			FileDataTemp.FileName.append(Parameter.FileList_Hosts->at(FileIndex));
-		#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-			FileDataTemp.sFileName.append(Parameter.sPath_Global->at(Index));
-			FileDataTemp.sFileName.append(Parameter.sFileList_Hosts->at(FileIndex));
-		#endif
 			FileList_Hosts.push_back(FileDataTemp);
 		}
 	}
 
 //Initialization
-	FILE *Input = nullptr;
+	FILE *FileHandle = nullptr;
 	auto IsFileModified = false;
 #if defined(PLATFORM_WIN)
-	std::shared_ptr<LARGE_INTEGER> File_LARGE_INTEGER(new LARGE_INTEGER());
-	std::shared_ptr<WIN32_FILE_ATTRIBUTE_DATA> File_WIN32_FILE_ATTRIBUTE_DATA(new WIN32_FILE_ATTRIBUTE_DATA());
-	memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-	memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-	std::shared_ptr<struct stat> FileStat(new struct stat());
-	memset(FileStat.get(), 0, sizeof(struct stat));
+	WIN32_FILE_ATTRIBUTE_DATA FileAttributeData;
+	LARGE_INTEGER FileSizeData;
+	memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+	memset(&FileSizeData, 0, sizeof(FileSizeData));
+#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+	struct stat FileStatData;
+	memset(&FileStatData, 0, sizeof(FileStatData));
 #endif
-	std::unique_lock<std::mutex> HostsFileMutex(HostsFileLock);
-	HostsFileMutex.unlock();
+	std::unique_lock<std::mutex> HostsFileMutex(HostsFileLock, std::defer_lock);
 
-//Files Monitor
+//File Monitor
 	for (;;)
 	{
 		IsFileModified = false;
 
-	//Check File lists.
+	//Check file list.
 		for (FileIndex = 0;FileIndex < FileList_Hosts.size();++FileIndex)
 		{
 		//Get attributes of file.
 		#if defined(PLATFORM_WIN)
-			if (GetFileAttributesExW(FileList_Hosts.at(FileIndex).FileName.c_str(), GetFileExInfoStandard, File_WIN32_FILE_ATTRIBUTE_DATA.get()) == FALSE)
+			if (GetFileAttributesExW(
+					FileList_Hosts.at(FileIndex).FileName.c_str(), 
+					GetFileExInfoStandard, 
+					&FileAttributeData) == FALSE)
 			{
-				memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-		#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-			if (stat(FileList_Hosts.at(FileIndex).sFileName.c_str(), FileStat.get()) != 0)
+				memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+		#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+			if (stat(FileList_Hosts.at(FileIndex).MBS_FileName.c_str(), &FileStatData) != 0)
 			{
-				memset(FileStat.get(), 0, sizeof(struct stat));
+				memset(&FileStatData, 0, sizeof(FileStatData));
 		#endif
 				if (FileList_Hosts.at(FileIndex).ModificationTime > 0)
 					IsFileModified = true;
 				FileList_Hosts.at(FileIndex).ModificationTime = 0;
 
-				ClearModificatingListData(READ_TEXT_HOSTS, FileIndex);
+				ClearModificatingListData(READ_TEXT_TYPE::HOSTS, FileIndex);
 			}
 			else {
 			//Check whole file size.
 			#if defined(PLATFORM_WIN)
-				File_LARGE_INTEGER->HighPart = File_WIN32_FILE_ATTRIBUTE_DATA->nFileSizeHigh;
-				File_LARGE_INTEGER->LowPart = File_WIN32_FILE_ATTRIBUTE_DATA->nFileSizeLow;
-				if (File_LARGE_INTEGER->QuadPart >= DEFAULT_FILE_MAXSIZE)
-			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-				if (FileStat->st_size >= (off_t)DEFAULT_FILE_MAXSIZE)
+				FileSizeData.HighPart = FileAttributeData.nFileSizeHigh;
+				FileSizeData.LowPart = FileAttributeData.nFileSizeLow;
+				if (FileSizeData.QuadPart < 0 || (uint64_t)FileSizeData.QuadPart >= FILE_READING_MAXSIZE)
+			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+				if (FileStatData.st_size >= (off_t)FILE_READING_MAXSIZE)
 			#endif
 				{
-					PrintError(LOG_ERROR_PARAMETER, L"Hosts file size is too large", 0, FileList_Hosts.at(FileIndex).FileName.c_str(), 0);
+					PrintError(LOG_LEVEL_TYPE::LEVEL_3, LOG_ERROR_TYPE::PARAMETER, L"Hosts file size is too large", 0, FileList_Hosts.at(FileIndex).FileName.c_str(), 0);
 
 				#if defined(PLATFORM_WIN)
-					memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-					memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-					memset(FileStat.get(), 0, sizeof(struct stat));
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					memset(&FileStatData, 0, sizeof(FileStatData));
 				#endif
 					if (FileList_Hosts.at(FileIndex).ModificationTime > 0)
 						IsFileModified = true;
 					FileList_Hosts.at(FileIndex).ModificationTime = 0;
 
-					ClearModificatingListData(READ_TEXT_HOSTS, FileIndex);
+					ClearModificatingListData(READ_TEXT_TYPE::HOSTS, FileIndex);
 					continue;
 				}
 
 			//Check modification time of file.
 			#if defined(PLATFORM_WIN)
-				memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-				File_LARGE_INTEGER->HighPart = File_WIN32_FILE_ATTRIBUTE_DATA->ftLastWriteTime.dwHighDateTime;
-				File_LARGE_INTEGER->LowPart = File_WIN32_FILE_ATTRIBUTE_DATA->ftLastWriteTime.dwLowDateTime;
-				if (FileList_Hosts.at(FileIndex).ModificationTime == 0 || File_LARGE_INTEGER->QuadPart != FileList_Hosts.at(FileIndex).ModificationTime)
+				memset(&FileSizeData, 0, sizeof(FileSizeData));
+				FileSizeData.HighPart = FileAttributeData.ftLastWriteTime.dwHighDateTime;
+				FileSizeData.LowPart = FileAttributeData.ftLastWriteTime.dwLowDateTime;
+				if (FileList_Hosts.at(FileIndex).ModificationTime == 0 || FileSizeData.QuadPart != FileList_Hosts.at(FileIndex).ModificationTime)
 				{
-					FileList_Hosts.at(FileIndex).ModificationTime = File_LARGE_INTEGER->QuadPart;
-					memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-					memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-				if (FileList_Hosts.at(FileIndex).ModificationTime == 0 || FileStat->st_mtime != FileList_Hosts.at(FileIndex).ModificationTime)
+					FileList_Hosts.at(FileIndex).ModificationTime = FileSizeData.QuadPart;
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+			#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+				if (FileList_Hosts.at(FileIndex).ModificationTime == 0 || FileStatData.st_mtime != FileList_Hosts.at(FileIndex).ModificationTime)
 				{
-					FileList_Hosts.at(FileIndex).ModificationTime = FileStat->st_mtime;
-					memset(FileStat.get(), 0, sizeof(struct stat));
+					FileList_Hosts.at(FileIndex).ModificationTime = FileStatData.st_mtime;
+					memset(&FileStatData, 0, sizeof(FileStatData));
 			#endif
-					ClearModificatingListData(READ_TEXT_HOSTS, FileIndex);
+					ClearModificatingListData(READ_TEXT_TYPE::HOSTS, FileIndex);
 					IsFileModified = true;
 
 				//Read file.
 				#if defined(PLATFORM_WIN)
-					if (_wfopen_s(&Input, FileList_Hosts.at(FileIndex).FileName.c_str(), L"rb") == EXIT_SUCCESS)
+					if (_wfopen_s(&FileHandle, FileList_Hosts.at(FileIndex).FileName.c_str(), L"rb") == 0)
 					{
-				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-					Input = fopen(FileList_Hosts.at(FileIndex).sFileName.c_str(), "rb");
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					FileHandle = fopen(FileList_Hosts.at(FileIndex).MBS_FileName.c_str(), "rb");
 				#endif
-						if (Input == nullptr)
+						if (FileHandle == nullptr)
 						{
 							continue;
 						}
 						else {
 						//Scan global list.
-							DIFFERNET_HOSTS_FILE_SET HostsFileSetTemp;
+							DIFFERNET_FILE_SET_HOSTS HostsFileSetTemp;
 							for (auto HostsFileSetIter = HostsFileSetModificating->begin();HostsFileSetIter != HostsFileSetModificating->end();++HostsFileSetIter)
 							{
 								if (HostsFileSetIter->FileIndex == FileIndex)
@@ -874,9 +990,9 @@ void __fastcall ReadHosts(void)
 							}
 
 						//Read data.
-							ReadText(Input, READ_TEXT_HOSTS, FileIndex);
-							fclose(Input);
-							Input = nullptr;
+							ReadText(FileHandle, READ_TEXT_TYPE::HOSTS, FileIndex);
+							fclose(FileHandle);
+							FileHandle = nullptr;
 						}
 				#if defined(PLATFORM_WIN)
 					}
@@ -884,16 +1000,16 @@ void __fastcall ReadHosts(void)
 				}
 				else {
 				#if defined(PLATFORM_WIN)
-					memset(File_WIN32_FILE_ATTRIBUTE_DATA.get(), 0, sizeof(WIN32_FILE_ATTRIBUTE_DATA));
-					memset(File_LARGE_INTEGER.get(), 0, sizeof(LARGE_INTEGER));
-				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-					memset(FileStat.get(), 0, sizeof(struct stat));
+					memset(&FileAttributeData, 0, sizeof(FileAttributeData));
+					memset(&FileSizeData, 0, sizeof(FileSizeData));
+				#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+					memset(&FileStatData, 0, sizeof(FileStatData));
 				#endif
 				}
 			}
 		}
 
-	//Update global list.
+	//Update global lists.
 		if (!IsFileModified)
 		{
 			Sleep(Parameter.FileRefreshTime);
@@ -901,27 +1017,31 @@ void __fastcall ReadHosts(void)
 		}
 
 	//Copy to using list.
+		std::sort(HostsFileSetModificating->begin(), HostsFileSetModificating->end(), SortCompare_Hosts);
 		HostsFileMutex.lock();
-		*HostsFileSetUsing = *HostsFileSetModificating;
+		HostsFileSetUsing->clear();
 		HostsFileSetUsing->shrink_to_fit();
+		*HostsFileSetUsing = *HostsFileSetModificating;
 		HostsFileMutex.unlock();
 		HostsFileSetModificating->shrink_to_fit();
 
 	//Flush DNS cache and Auto-refresh
-		FlushAllDNSCache();
+		Flush_DNS_Cache(nullptr);
 		Sleep(Parameter.FileRefreshTime);
 	}
 
 //Monitor terminated
-	PrintError(LOG_ERROR_SYSTEM, L"Read Hosts module Monitor terminated", 0, nullptr, 0);
+	PrintError(LOG_LEVEL_TYPE::LEVEL_2, LOG_ERROR_TYPE::SYSTEM, L"Read Hosts module Monitor terminated", 0, nullptr, 0);
 	return;
 }
 
 //Clear data in list
-void __fastcall ClearModificatingListData(const size_t ClearType, const size_t FileIndex)
+void ClearModificatingListData(
+	const READ_TEXT_TYPE ClearType, 
+	const size_t FileIndex)
 {
-//Clear Hosts set.
-	if (ClearType == READ_TEXT_HOSTS)
+//Clear Hosts file set.
+	if (ClearType == READ_TEXT_TYPE::HOSTS)
 	{
 		for (auto HostsFileSetIter = HostsFileSetModificating->begin();HostsFileSetIter != HostsFileSetModificating->end();++HostsFileSetIter)
 		{
@@ -932,9 +1052,8 @@ void __fastcall ClearModificatingListData(const size_t ClearType, const size_t F
 			}
 		}
 	}
-
-//Clear IPFilter set.
-	else if (ClearType == READ_TEXT_IPFILTER)
+//Clear IPFilter file set.
+	else if (ClearType == READ_TEXT_TYPE::IPFILTER)
 	{
 		for (auto IPFilterFileSetIter = IPFilterFileSetModificating->begin();IPFilterFileSetIter != IPFilterFileSetModificating->end();++IPFilterFileSetIter)
 		{
@@ -950,24 +1069,66 @@ void __fastcall ClearModificatingListData(const size_t ClearType, const size_t F
 }
 
 //Get data list from file
-void __fastcall GetParameterListData(std::vector<std::string> &ListData, const std::string Data, const size_t DataOffset, const size_t Length)
+void GetParameterListData(
+	std::vector<std::string> &ListData, 
+	const std::string &Data, 
+	const size_t DataOffset, 
+	const size_t Length, 
+	const uint8_t SeparatedSign, 
+	const bool IsCaseConvert, 
+	const bool KeepEmptyItem)
 {
+//Initialization
 	std::string NameString;
-	for (size_t Index = DataOffset;Index < Length;++Index)
+	ListData.clear();
+
+//Get all list data.
+	for (auto Index = DataOffset;Index < Length;++Index)
 	{
 	//Last data
 		if (Index + 1U == Length)
 		{
-			NameString.append(Data, Index, 1U);
-			ListData.push_back(NameString);
+			if (Data.at(Index) != SeparatedSign)
+				NameString.append(Data, Index, 1U);
+			if (NameString.empty())
+			{
+				if (KeepEmptyItem)
+					ListData.push_back(NameString);
 
-			break;
+				break;
+			}
+			else {
+				if (IsCaseConvert)
+					CaseConvert(NameString, false);
+
+			//Add char to end.
+				ListData.push_back(NameString);
+				if (KeepEmptyItem && Data.at(Index) == SeparatedSign)
+				{
+					NameString.clear();
+					ListData.push_back(NameString);
+				}
+
+				break;
+			}
 		}
 	//Separated
-		else if (Data.at(Index) == ASCII_VERTICAL)
+		else if (Data.at(Index) == SeparatedSign)
 		{
-			ListData.push_back(NameString);
-			NameString.clear();
+			if (!NameString.empty())
+			{
+				if (IsCaseConvert)
+					CaseConvert(NameString, false);
+
+			//Add char to end.
+				ListData.push_back(NameString);
+				NameString.clear();
+			}
+			else if (KeepEmptyItem)
+			{
+				ListData.push_back(NameString);
+				NameString.clear();
+			}
 		}
 		else {
 			NameString.append(Data, Index, 1U);

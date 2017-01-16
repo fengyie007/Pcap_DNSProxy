@@ -1,6 +1,6 @@
 ﻿// This code is part of Pcap_DNSProxy
 // A local DNS server based on WinPcap and LibPcap
-// Copyright (C) 2012-2015 Chengr28
+// Copyright (C) 2012-2016 Chengr28
 // 
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -19,119 +19,147 @@
 
 #include "Base.h"
 
+//Global variables
 extern CONFIGURATION_TABLE Parameter;
+extern GLOBAL_STATUS GlobalRunningStatus;
 
 //Check empty buffer
-bool __fastcall CheckEmptyBuffer(const void *Buffer, const size_t Length)
+bool CheckEmptyBuffer(
+	const void * const Buffer, 
+	const size_t Length)
 {
 //Null pointer
 	if (Buffer == nullptr)
-		return false;
-
-//Scan all data.
-	for (size_t Index = 0;Index < Length;++Index)
 	{
-		if (((uint8_t *)Buffer)[Index] != 0)
-			return false;
+		return false;
+	}
+	else {
+	//Scan all data.
+		for (size_t Index = 0;Index < Length;++Index)
+		{
+			if (*(((uint8_t *)Buffer) + Index) != 0)
+				return false;
+		}
 	}
 
 	return true;
 }
 
-//Convert host values to network byte order with 16 bits(Force)
-uint16_t __fastcall hton16_Force(const uint16_t Value)
-{
-	uint8_t *Result = (uint8_t *)&Value;
-	return (uint16_t)(Result[0] << 8U | Result[1U]);
-}
-
-/* Redirect to hton16_Force.
-//Convert network byte order to host values with 16 bits(Force)
-uint16_t __fastcall ntoh16_Force(const uint16_t Value)
-{
-	uint8_t *Result = (uint8_t *)&Value;
-	return (uint16_t)(Result[0] << 8U | Result[1U]);
-}
-*/
-
-//Convert host values to network byte order with 32 bits(Force)
-uint32_t __fastcall hton32_Force(const uint32_t Value)
-{
-	uint8_t *Result = (uint8_t *)&Value;
-	return (uint32_t)(Result[0] << 24U | Result[1U] << 16U | Result[2U] << 8U | Result[3U]);
-}
-
-/* Redirect to hton32_Force.
-//Convert network byte order to host values with 32 bits(Force)
-uint32_t __fastcall ntoh32_Force(const uint32_t Value)
-{
-	uint8_t *Result = (uint8_t *)&Value;
-	return (uint32_t)(Result[0] << 24U | Result[1U] << 16U | Result[2U] << 8U | Result[3U]);
-}
-*/
-
-//Convert host values to network byte order with 64 bits
-uint64_t __fastcall hton64(const uint64_t Value)
-{
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-	return (((uint64_t)htonl((int32_t)((Value << 32U) >> 32U))) << 32U) | (uint32_t)htonl((int32_t)(Value >> 32U));
-#else //BIG_ENDIAN
-	return Value;
-#endif
-}
-
-/* Redirect to hton64.
-//Convert network byte order to host values with 64 bits
-uint64_t __fastcall ntoh64(const uint64_t Value)
-{
-#if __BYTE_ORDER == __LITTLE_ENDIAN
-	return (((uint64_t)ntohl((int32_t)((Value << 32U) >> 32U))) << 32U) | (uint32_t)ntohl((int32_t)(Value >> 32U));
-#else //BIG_ENDIAN
-	return Value;
-#endif
-}
-*/
-
 //Convert multiple bytes to wide char string
-bool __fastcall MBSToWCSString(std::wstring &Target, const char *Buffer)
+bool MBS_To_WCS_String(
+	const uint8_t * const Buffer, 
+	const size_t MaxLen, 
+	std::wstring &Target)
 {
 //Check buffer.
-	if (Buffer == nullptr || CheckEmptyBuffer(Buffer, strnlen_s(Buffer, LARGE_PACKET_MAXSIZE)) || strnlen_s(Buffer, LARGE_PACKET_MAXSIZE) == 0)
+	Target.clear();
+	if (Buffer == nullptr || MaxLen == 0)
+		return false;
+	auto Length = strnlen_s((const char *)Buffer, MaxLen);
+	if (Length == 0 || CheckEmptyBuffer(Buffer, Length))
 		return false;
 
 //Convert string.
-	std::shared_ptr<wchar_t> TargetPTR(new wchar_t[strnlen_s(Buffer, LARGE_PACKET_MAXSIZE) + 1U]());
-	wmemset(TargetPTR.get(), 0, strnlen_s(Buffer, LARGE_PACKET_MAXSIZE) + 1U);
+	std::shared_ptr<wchar_t> TargetBuffer(new wchar_t[Length + PADDING_RESERVED_BYTES]());
+	wmemset(TargetBuffer.get(), 0, Length + PADDING_RESERVED_BYTES);
 #if defined(PLATFORM_WIN)
-	if (MultiByteToWideChar(CP_ACP, 0, Buffer, MBSTOWCS_NULLTERMINATE, TargetPTR.get(), (int)(strnlen_s(Buffer, LARGE_PACKET_MAXSIZE) + 1U)) == 0)
-#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-	if (mbstowcs(TargetPTR.get(), Buffer, strnlen(Buffer, LARGE_PACKET_MAXSIZE) + 1U) == RETURN_ERROR)
+	if (MultiByteToWideChar(
+			CP_ACP, 
+			0, 
+			(LPCCH)Buffer, 
+			MBSTOWCS_NULL_TERMINATE, 
+			TargetBuffer.get(), 
+			(int)(Length + PADDING_RESERVED_BYTES)) == 0)
+#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+	if (mbstowcs(TargetBuffer.get(), (const char *)Buffer, Length + PADDING_RESERVED_BYTES) == (size_t)RETURN_ERROR)
 #endif
+	{
 		return false;
-	else 
-		Target = TargetPTR.get();
+	}
+	else {
+		if (wcsnlen_s(TargetBuffer.get(), Length + PADDING_RESERVED_BYTES) == 0)
+			return false;
+		else 
+			Target = TargetBuffer.get();
+	}
+
+	return true;
+}
+
+//Convert wide char string to multiple bytes
+bool WCS_To_MBS_String(
+	const wchar_t * const Buffer, 
+	const size_t MaxLen, 
+	std::string &Target)
+{
+//Check buffer pointer.
+	Target.clear();
+	if (Buffer == nullptr || MaxLen == 0)
+		return false;
+	auto Length = wcsnlen_s(Buffer, MaxLen);
+	if (Length == 0 || CheckEmptyBuffer(Buffer, sizeof(wchar_t) * Length))
+		return false;
+
+//Convert string.
+	std::shared_ptr<uint8_t> TargetBuffer(new uint8_t[Length + PADDING_RESERVED_BYTES]());
+	memset(TargetBuffer.get(), 0, Length + PADDING_RESERVED_BYTES);
+#if defined(PLATFORM_WIN)
+	if (WideCharToMultiByte(
+			CP_ACP, 
+			0, 
+			Buffer, 
+			MBSTOWCS_NULL_TERMINATE, 
+			(LPSTR)TargetBuffer.get(), 
+			(int)(Length + PADDING_RESERVED_BYTES), 
+			nullptr, 
+			nullptr) == 0)
+#elif (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+	if (wcstombs((char *)TargetBuffer.get(), Buffer, Length + PADDING_RESERVED_BYTES) == (size_t)RETURN_ERROR)
+#endif
+	{
+		return false;
+	}
+	else {
+		if (strnlen_s((const char *)TargetBuffer.get(), Length + PADDING_RESERVED_BYTES) == 0)
+			return false;
+		else 
+			Target = (const char *)TargetBuffer.get();
+	}
 
 	return true;
 }
 
 //Convert lowercase/uppercase words to uppercase/lowercase words(C-Style version)
-void __fastcall CaseConvert(const bool IsLowerToUpper, PSTR Buffer, const size_t Length)
+void CaseConvert(
+	uint8_t * const Buffer, 
+	const size_t Length, 
+	const bool IsLowerToUpper)
 {
-	for (size_t Index = 0;Index < Length;++Index)
+//Null pointer
+	if (Buffer == nullptr || Length == 0)
 	{
-	//Lowercase to uppercase
-		if (IsLowerToUpper)
-			Buffer[Index] = (char)toupper(Buffer[Index]);
-	//Uppercase to lowercase
-		else 
-			Buffer[Index] = (char)tolower(Buffer[Index]);
+		return;
+	}
+	else {
+	//Convert words.
+		for (size_t Index = 0;Index < Length;++Index)
+		{
+		//Lowercase to uppercase
+			if (IsLowerToUpper)
+				Buffer[Index] = (uint8_t)toupper(Buffer[Index]);
+		//Uppercase to lowercase
+			else 
+				Buffer[Index] = (uint8_t)tolower(Buffer[Index]);
+		}
 	}
 
 	return;
 }
 
-//Convert lowercase/uppercase words to uppercase/lowercase words(C++ String version)
-void __fastcall CaseConvert(const bool IsLowerToUpper, std::string &Buffer)
+//Convert lowercase/uppercase words to uppercase/lowercase words(C++ string version)
+void CaseConvert(
+	std::string &Buffer, 
+	const bool IsLowerToUpper)
 {
 	for (auto &StringIter:Buffer)
 	{
@@ -146,96 +174,252 @@ void __fastcall CaseConvert(const bool IsLowerToUpper, std::string &Buffer)
 	return;
 }
 
-#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACX))
-//Linux and Mac OS X compatible with GetTickCount64
-uint64_t GetCurrentSystemTime(void)
+//Convert lowercase/uppercase words to uppercase/lowercase words(C++ wstring version)
+void CaseConvert(
+	std::wstring &Buffer, 
+	const bool IsLowerToUpper)
 {
-	std::shared_ptr<timeval> CurrentTime(new timeval());
-	memset(CurrentTime.get(), 0, sizeof(timeval));
-	if (gettimeofday(CurrentTime.get(), nullptr) == EXIT_SUCCESS)
-		return (uint64_t)CurrentTime->tv_sec * SECOND_TO_MILLISECOND + (uint64_t)CurrentTime->tv_usec / MICROSECOND_TO_MILLISECOND;
+	for (auto &StringIter:Buffer)
+	{
+	//Lowercase to uppercase
+		if (IsLowerToUpper)
+			StringIter = (wchar_t)toupper(StringIter);
+	//Uppercase to lowercase
+		else 
+			StringIter = (wchar_t)tolower(StringIter);
+	}
+
+	return;
+}
+
+//Make string reversed
+void MakeStringReversed(
+	std::string &String)
+{
+//String check
+	if (String.length() <= 1U)
+		return;
+
+//Make string reversed
+	for (size_t Index = 0;Index < String.length() / 2U;++Index)
+	{
+		uint8_t StringIter = String.at(String.length() - 1U - Index);
+		String.at(String.length() - 1U - Index) = String.at(Index);
+		String.at(Index) = StringIter;
+	}
+
+	return;
+}
+
+//Make string reversed
+void MakeStringReversed(
+	std::wstring &String)
+{
+//String check
+	if (String.length() <= 1U)
+		return;
+
+//Make string reversed
+	for (size_t Index = 0;Index < String.length() / 2U;++Index)
+	{
+		wchar_t StringIter = String.at(String.length() - 1U - Index);
+		String.at(String.length() - 1U - Index) = String.at(Index);
+		String.at(Index) = StringIter;
+	}
+
+	return;
+}
+
+//Reversed string comparing
+bool CompareStringReversed(
+	const std::string &RuleItem, 
+	const std::string &TestItem)
+{
+	if (!RuleItem.empty() && !TestItem.empty() && TestItem.length() >= RuleItem.length() && memcmp(RuleItem.c_str(), TestItem.c_str(), RuleItem.length()) == 0)
+		return true;
+
+	return false;
+}
+
+//Reversed string comparing
+bool CompareStringReversed(
+	const wchar_t * const RuleItem, 
+	const wchar_t * const TestItem)
+{
+//Buffer check
+	if (RuleItem == nullptr || TestItem == nullptr)
+		return false;
+
+//Length check
+	std::wstring InnerRuleItem(RuleItem), InnerTestItem(TestItem);
+	if (InnerRuleItem.empty() || InnerTestItem.empty() || InnerTestItem.length() < InnerRuleItem.length())
+	{
+		return false;
+	}
+	else {
+	//Make string reversed to compare.
+		MakeStringReversed(InnerRuleItem);
+		MakeStringReversed(InnerTestItem);
+
+	//Compare each other.
+		if (memcmp(InnerRuleItem.c_str(), InnerTestItem.c_str(), InnerRuleItem.length()) == 0)
+			return true;
+	}
+
+	return false;
+}
+
+//Sort compare(IPFilter)
+bool SortCompare_IPFilter(
+	const DIFFERNET_FILE_SET_IPFILTER &Begin, 
+	const DIFFERNET_FILE_SET_IPFILTER &End)
+{
+	return Begin.FileIndex < End.FileIndex;
+}
+
+//Sort compare(Hosts)
+bool SortCompare_Hosts(
+	const DIFFERNET_FILE_SET_HOSTS &Begin, 
+	const DIFFERNET_FILE_SET_HOSTS &End)
+{
+	return Begin.FileIndex < End.FileIndex;
+}
+
+//Base64 encoding
+//Base64 encoding or decoding is from https://github.com/zhicheng/base64.
+size_t Base64_Encode(
+	uint8_t * const Input, 
+	const size_t Length, 
+	uint8_t * const Output, 
+	const size_t OutputSize)
+{
+//Length check
+	if (Length == 0)
+		return 0;
+
+//Convert from binary to Base64.
+	size_t Index[]{0, 0, 0};
+	memset(Output, 0, OutputSize);
+	for (Index[0] = Index[1U] = 0;Index[0] < Length;++Index[0])
+	{
+	//From 6/gcd(6, 8)
+		Index[2U] = Index[0] % 3U;
+		switch (Index[2U])
+		{
+			case 0:
+			{
+				Output[Index[1U]++] = GlobalRunningStatus.Base64_EncodeTable[(Input[Index[0]] >> 2U) & 0x3F];
+				continue;
+			}
+			case 1U:
+			{
+				Output[Index[1U]++] = GlobalRunningStatus.Base64_EncodeTable[((Input[Index[0] - 1U] & 0x3) << 4U) + ((Input[Index[0]] >> 4U) & 0xF)];
+				continue;
+			}
+			case 2U:
+			{
+				Output[Index[1U]++] = GlobalRunningStatus.Base64_EncodeTable[((Input[Index[0] - 1U] & 0xF) << 2U) + ((Input[Index[0]] >> 6U) & 0x3)];
+				Output[Index[1U]++] = GlobalRunningStatus.Base64_EncodeTable[Input[Index[0]] & 0x3F];
+			}
+		}
+	}
+
+//Move back.
+	Index[0] -= 1U;
+
+//Check the last and add padding.
+	if ((Index[0] % 3U) == 0)
+	{
+		Output[Index[1U]++] = GlobalRunningStatus.Base64_EncodeTable[(Input[Index[0]] & 0x3) << 4U];
+		Output[Index[1U]++] = BASE64_PAD;
+		Output[Index[1U]++] = BASE64_PAD;
+	}
+	else if ((Index[0] % 3U) == 1U)
+	{
+		Output[Index[1U]++] = GlobalRunningStatus.Base64_EncodeTable[(Input[Index[0]] & 0xF) << 2U];
+		Output[Index[1U]++] = BASE64_PAD;
+	}
+
+	return strnlen_s((const char *)Output, OutputSize);
+}
+
+//Base64 decoding
+//Base64 encoding or decoding is from https://github.com/zhicheng/base64.
+size_t Base64_Decode(
+	uint8_t *Input, 
+	const size_t Length, 
+	uint8_t *Output, 
+	const size_t OutputSize)
+{
+//Initialization
+	if (Length == 0)
+		return 0;
+	size_t Index[]{0, 0, 0};
+	memset(Output, 0, OutputSize);
+
+//Convert from Base64 to binary.
+	for (Index[0] = Index[1U] = 0;Index[0] < Length;++Index[0])
+	{
+		int StringIter = 0;
+		Index[2U] = Index[0] % 4U;
+		if (Input[Index[0]] == (uint8_t)BASE64_PAD)
+			return strnlen_s((const char *)Output, OutputSize);
+		if (Input[Index[0]] < BASE64_DECODE_FIRST || Input[Index[0]] > BASE64_DECODE_LAST || 
+			(StringIter = GlobalRunningStatus.Base64_DecodeTable[Input[Index[0]] - BASE64_DECODE_FIRST]) == -1)
+				return 0;
+		switch (Index[2U])
+		{
+			case 0:
+			{
+				Output[Index[1U]] = (uint8_t)(StringIter << 2U);
+				continue;
+			}
+			case 1U:
+			{
+				Output[Index[1U]++] += (StringIter >> 4U) & 0x3;
+
+			//If not last char with padding
+				if (Index[0] < (Length - 3U) || Input[Length - 2U] != (uint8_t)BASE64_PAD)
+					Output[Index[1U]] = (StringIter & 0xF) << 4U;
+				continue;
+			}
+			case 2U:
+			{
+				Output[Index[1U]++] += (StringIter >> 2U) & 0xF;
+
+			//If not last char with padding
+				if (Index[0] < (Length - 2U) || Input[Length - 1U] != (uint8_t)BASE64_PAD)
+					Output[Index[1U]] = (StringIter & 0x3) << 6U;
+				continue;
+			}
+			case 3U:
+			{
+				Output[Index[1U]++] += (uint8_t)StringIter;
+			}
+		}
+	}
+
+	return strnlen_s((const char *)Output, OutputSize);
+}
+
+#if (defined(PLATFORM_LINUX) || defined(PLATFORM_MACOS))
+//Increase time with milliseconds
+uint64_t IncreaseMillisecondTime(
+	const uint64_t CurrentTime, 
+	const timeval IncreaseTime)
+{
+	return CurrentTime + IncreaseTime.tv_sec * SECOND_TO_MILLISECOND + IncreaseTime.tv_usec / MICROSECOND_TO_MILLISECOND;
+}
+
+//Get current system time
+uint64_t GetCurrentSystemTime(
+	void)
+{
+	timeval CurrentTime;
+	memset(&CurrentTime, 0, sizeof(CurrentTime));
+	if (gettimeofday(&CurrentTime, nullptr) == 0)
+		return IncreaseMillisecondTime(0, CurrentTime);
 
 	return 0;
-}
-
-//Windows XP with SP3 support
-#elif (defined(PLATFORM_WIN32) && !defined(PLATFORM_WIN64))
-//Verify version of system(Greater than Windows Vista)
-BOOL WINAPI IsGreaterThanVista(void)
-{
-	std::shared_ptr<OSVERSIONINFOEXW> OSVI(new OSVERSIONINFOEXW());
-	memset(OSVI.get(), 0, sizeof(OSVERSIONINFOEXW));
-	DWORDLONG dwlConditionMask = 0;
-
-//Initialization
-	ZeroMemory(OSVI.get(), sizeof(OSVERSIONINFOEXW));
-	OSVI->dwOSVersionInfoSize = sizeof(OSVERSIONINFOEXW);
-	OSVI->dwMajorVersion = 6U; //Greater than Windows Vista.
-	OSVI->dwMinorVersion = 0;
-
-//System Major version > dwMajorVersion
-	VER_SET_CONDITION(dwlConditionMask, VER_MAJORVERSION, VER_GREATER);
-	if (VerifyVersionInfoW(OSVI.get(), VER_MAJORVERSION, dwlConditionMask))
-		return TRUE;
-
-//Sytem Major version = dwMajorVersion and Minor version > dwMinorVersion
-	VER_SET_CONDITION(dwlConditionMask, VER_MAJORVERSION, VER_EQUAL);
-	VER_SET_CONDITION(dwlConditionMask, VER_MINORVERSION, VER_GREATER);
-	return VerifyVersionInfoW(OSVI.get(), VER_MAJORVERSION|VER_MINORVERSION, dwlConditionMask);
-}
-
-//Try to load library to get pointers of functions
-BOOL WINAPI GetFunctionPointer(const size_t FunctionType)
-{
-//GetTickCount64() function
-	if (FunctionType == FUNCTION_GETTICKCOUNT64)
-	{
-		Parameter.FunctionLibrary_GetTickCount64 = LoadLibraryW(L"Kernel32.dll");
-		if (Parameter.FunctionLibrary_GetTickCount64 != nullptr)
-		{
-			Parameter.FunctionPTR_GetTickCount64 = (FunctionType_GetTickCount64)GetProcAddress(Parameter.FunctionLibrary_GetTickCount64, "GetTickCount64");
-			if (Parameter.FunctionPTR_GetTickCount64 == nullptr)
-			{
-				FreeLibrary(Parameter.FunctionLibrary_GetTickCount64);
-				Parameter.FunctionLibrary_GetTickCount64 = nullptr;
-
-				return FALSE;
-			}
-		}
-	}
-//inet_ntop() function
-	else if (FunctionType == FUNCTION_INET_NTOP)
-	{
-		Parameter.FunctionLibrary_InetNtop = LoadLibraryW(L"ws2_32.dll");
-		if (Parameter.FunctionLibrary_InetNtop != nullptr)
-		{
-			Parameter.FunctionPTR_InetNtop = (FunctionType_InetNtop)GetProcAddress(Parameter.FunctionLibrary_InetNtop, "inet_ntop");
-			if (Parameter.FunctionPTR_InetNtop == nullptr)
-			{
-				FreeLibrary(Parameter.FunctionLibrary_InetNtop);
-				Parameter.FunctionLibrary_InetNtop = nullptr;
-
-				return FALSE;
-			}
-		}
-	}
-//inet_pton() function
-	else if (FunctionType == FUNCTION_INET_PTON)
-	{
-		Parameter.FunctionLibrary_InetPton = LoadLibraryW(L"ws2_32.dll");
-		if (Parameter.FunctionLibrary_InetPton != nullptr)
-		{
-			Parameter.FunctionPTR_InetPton = (FunctionType_InetPton)GetProcAddress(Parameter.FunctionLibrary_InetPton, "inet_pton");
-			if (Parameter.FunctionPTR_InetPton == nullptr)
-			{
-				FreeLibrary(Parameter.FunctionLibrary_InetPton);
-				Parameter.FunctionLibrary_InetPton = nullptr;
-
-				return FALSE;
-			}
-		}
-	}
-
-	return TRUE;
 }
 #endif

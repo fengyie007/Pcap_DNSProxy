@@ -1,6 +1,6 @@
 ﻿// This code is part of Pcap_DNSProxy
 // A local DNS server based on WinPcap and LibPcap
-// Copyright (C) 2012-2015 Chengr28
+// Copyright (C) 2012-2016 Chengr28
 // 
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -17,9 +17,21 @@
 // Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
+#ifndef PCAP_DNSPROXY_PRINTLOG_H
+#define PCAP_DNSPROXY_PRINTLOG_H
+
 #include "Base.h"
 
 //Global variables
 extern CONFIGURATION_TABLE Parameter;
-extern time_t StartTime;
-extern std::mutex ErrorLogLock;
+extern GLOBAL_STATUS GlobalRunningStatus;
+extern std::vector<FILE_DATA> FileList_Config, FileList_IPFilter, FileList_Hosts;
+extern std::mutex ScreenLock;
+std::mutex ErrorLogLock;
+
+//Functions
+bool WriteMessage_ScreenFile(
+	const std::wstring &Message, 
+	const ssize_t ErrorCode, 
+	const size_t Line);
+#endif

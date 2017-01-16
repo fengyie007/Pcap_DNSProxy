@@ -1,6 +1,6 @@
 ﻿// This code is part of Pcap_DNSProxy
 // A local DNS server based on WinPcap and LibPcap
-// Copyright (C) 2012-2015 Chengr28
+// Copyright (C) 2012-2016 Chengr28
 // 
 // This program is free software; you can redistribute it and/or
 // modify it under the terms of the GNU General Public License
@@ -17,19 +17,29 @@
 // Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
 
+#ifndef PCAP_DNSPROXY_DNSCURVE_H
+#define PCAP_DNSPROXY_DNSCURVE_H
+
 #include "Base.h"
+
 #if defined(ENABLE_LIBSODIUM)
 //Global variables
-	extern CONFIGURATION_TABLE Parameter;
-	extern ALTERNATE_SWAP_TABLE AlternateSwapList;
-	extern DNSCURVE_CONFIGURATON_TABLE DNSCurveParameter;
+extern CONFIGURATION_TABLE Parameter;
+extern GLOBAL_STATUS GlobalRunningStatus;
+extern ALTERNATE_SWAP_TABLE AlternateSwapList;
+extern DNSCURVE_CONFIGURATION_TABLE DNSCurveParameter;
+extern std::deque<SOCKET_MARKING_DATA> SocketMarkingList;
+extern std::mutex SocketMarkingLock;
 
 //Functions
-	SSIZE_T __fastcall DNSCurvePaddingData(const bool SetPadding, PSTR Buffer, const SSIZE_T Length);
-	size_t DNSCurveSignatureRequest(const char *OriginalSend, const size_t SendSize, PSTR OriginalRecv, const size_t RecvSize);
-	size_t __fastcall DNSCurveSelectTargetSocket(SOCKET_DATA *SockData, PDNSCURVE_SERVER_DATA &PacketTarget, bool *&IsAlternate, size_t *&AlternateTimeoutTimes, const uint16_t Protocol);
-	bool __fastcall DNSCurveSelectTargetSocketMulti(bool &IsIPv6, bool *&IsAlternate, const uint16_t Protocol);
-	bool __fastcall DNSCurveTCPSignatureRequest(const uint16_t Protocol, const bool IsAlternate);
-	bool __fastcall DNSCurveUDPSignatureRequest(const uint16_t Protocol, const bool IsAlternate);
-	bool __fastcall DNSCruveGetSignatureData(const char *Buffer, const size_t ServerType);
+size_t DNSCurvePaddingData(
+	const bool IsSetPadding, 
+	uint8_t * const Buffer, 
+	const size_t Length, 
+	const size_t BufferSize);
+bool DNSCurveSelectTargetSocket(
+	const uint16_t Protocol, 
+	bool &IsIPv6, 
+	bool ** const IsAlternate);
+#endif
 #endif
